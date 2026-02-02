@@ -8,6 +8,9 @@ __pycache__/
 venv/
 ENV/
 
+# Environment
+.env
+
 # Django
 *.log
 local_settings.py

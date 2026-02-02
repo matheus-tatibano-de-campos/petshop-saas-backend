@@ -117,4 +117,20 @@ Cada request é automaticamente associada a um tenant, garantindo isolamento ló
 git clone https://github.com/seu-usuario/petshop-saas-backend.git
 cd petshop-saas-backend
 
-docker-compose up --build
+# 1. Criar ambiente virtual e instalar dependências
+python -m venv .venv
+.venv\Scripts\Activate.ps1   # Windows
+# source .venv/bin/activate   # Linux/macOS
+pip install -r requirements.txt
+
+# 2. Subir PostgreSQL (Docker)
+docker compose up -d
+
+# 3. Rodar migrations
+python manage.py migrate
+
+# 4. Iniciar servidor
+python manage.py runserver
+```
+
+O PostgreSQL expõe a porta **5433** no host (para evitar conflito com instalação local na 5432). Variáveis de ambiente em `.env.example`.
