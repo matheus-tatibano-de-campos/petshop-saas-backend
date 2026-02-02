@@ -1,10 +1,22 @@
 # PetShop SaaS Backend
 
-Backend de um **SaaS multi-tenant para Pet Shops**, desenvolvido com foco em **arquitetura**, **boas práticas**, **regras de negócio reais** e **padrões usados em sistemas de produção**.
+Backend de um SaaS multi-tenant B2B para Pet Shops, desenvolvido em Django, com foco em arquitetura limpa, regras de negócio e padrões de produção.
 
 Este projeto foi criado como **case técnico e portfólio**, simulando um cenário real de desenvolvimento de SaaS B2B.
 
 ---
+
+## Por que este projeto?
+
+Este projeto foi desenvolvido para simular desafios reais encontrados em sistemas SaaS B2B, como:
+
+- isolamento de dados entre clientes
+- concorrência em agendamentos
+- regras de negócio dependentes de tempo
+- consistência transacional
+- integração com pagamentos via webhook
+
+O foco não é apenas "funcionar", mas **funcionar de forma correta, previsível e sustentável**.
 
 ## 🎯 Objetivo do Projeto
 
