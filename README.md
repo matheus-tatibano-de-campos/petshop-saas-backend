@@ -46,6 +46,28 @@ Cada request é automaticamente associada a um tenant, garantindo isolamento ló
 
 > ⚠️ Para este MVP, **não são usados schemas separados no PostgreSQL**, priorizando simplicidade e custo reduzido.
 
+### Padrão Thread-Local para Multi-Tenancy
+
+O isolamento entre tenants é garantido por um padrão **thread-local** seguro:
+
+1. **`TenantMiddleware`** intercepta toda requisição HTTP e resolve o tenant pelo subdomínio
+2. O tenant é armazenado em **`threading.local()`** (`core/context.py`) — isolado por thread
+3. **`TenantAwareModel`** (base abstrata) adiciona `tenant` (ForeignKey) em todos os models
+4. **`TenantAwareManager`** filtra automaticamente queries por `get_current_tenant()`
+5. Ao final da requisição, o middleware limpa o contexto (`clear_current_tenant()`)
+
+**Resultado:** Cada requisição vê apenas dados do seu tenant, sem passar `tenant` explicitamente nas queries.
+
+```python
+# Exemplo: Customer herda de TenantAwareModel
+class Customer(TenantAwareModel):
+    name = models.CharField(max_length=200)
+    # tenant = ForeignKey(Tenant) ← herdado automaticamente
+
+# Na view (após TenantMiddleware):
+customers = Customer.objects.all()  # Filtrado automaticamente por request.tenant
+```
+
 ---
 
 ## 🧠 Decisões Técnicas Importantes

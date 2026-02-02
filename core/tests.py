@@ -1,6 +1,8 @@
+from django.db import models
 from django.test import Client, TestCase
 
-from .models import Tenant
+from .context import clear_current_tenant, get_current_tenant, set_current_tenant
+from .models import Tenant, TenantAwareModel
 
 
 class TenantMiddlewareIntegrationTests(TestCase):
@@ -49,3 +51,96 @@ class TenantMiddlewareIntegrationTests(TestCase):
         response = self.client.get("/api/health/", HTTP_HOST="tenant1.localhost:8000")
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.json()["error"]["code"], "TENANT_NOT_FOUND")
+
+
+class TestModel(TenantAwareModel):
+    """Test model for TenantAwareModel unit tests."""
+
+    name = models.CharField(max_length=100)
+
+    class Meta:
+        app_label = "core"
+
+
+class TenantAwareModelUnitTests(TestCase):
+    """Unit tests for TenantAwareModel - DoD: auto-tenant, manager filtering."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # Create the TestModel table dynamically for tests
+        from django.db import connection
+        with connection.schema_editor() as schema_editor:
+            schema_editor.create_model(TestModel)
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        # Drop the TestModel table after tests (if it still exists)
+        from django.db import connection
+        try:
+            with connection.schema_editor() as schema_editor:
+                schema_editor.delete_model(TestModel)
+        except Exception:
+            pass  # Table might already be deleted by test db teardown
+
+    def setUp(self):
+        self.tenant1 = Tenant.objects.create(
+            subdomain="test1", name="Test Tenant 1", is_active=True
+        )
+        self.tenant2 = Tenant.objects.create(
+            subdomain="test2", name="Test Tenant 2", is_active=True
+        )
+
+    def tearDown(self):
+        clear_current_tenant()
+
+    def test_save_auto_sets_tenant_from_context(self):
+        """save() auto-sets tenant from thread-local context."""
+        set_current_tenant(self.tenant1)
+        obj = TestModel(name="Test Object")
+        obj.save()
+        self.assertEqual(obj.tenant, self.tenant1)
+
+    def test_save_raises_error_when_no_tenant_in_context(self):
+        """save() raises ValueError when no tenant in context and tenant not set."""
+        clear_current_tenant()
+        obj = TestModel(name="Test Object")
+        with self.assertRaisesMessage(
+            ValueError, "Tenant required. Set tenant or ensure TenantMiddleware has run."
+        ):
+            obj.save()
+
+    def test_save_respects_explicit_tenant(self):
+        """save() respects explicitly set tenant, doesn't override."""
+        set_current_tenant(self.tenant1)
+        obj = TestModel(name="Test Object", tenant=self.tenant2)
+        obj.save()
+        self.assertEqual(obj.tenant, self.tenant2)
+
+    def test_manager_filters_by_current_tenant(self):
+        """Manager filters queryset by current tenant."""
+        set_current_tenant(self.tenant1)
+        obj1 = TestModel.objects.create(name="Object 1")
+        
+        set_current_tenant(self.tenant2)
+        obj2 = TestModel.objects.create(name="Object 2")
+
+        set_current_tenant(self.tenant1)
+        qs = TestModel.objects.all()
+        self.assertEqual(qs.count(), 1)
+        self.assertEqual(qs.first().id, obj1.id)
+
+        set_current_tenant(self.tenant2)
+        qs = TestModel.objects.all()
+        self.assertEqual(qs.count(), 1)
+        self.assertEqual(qs.first().id, obj2.id)
+
+    def test_manager_returns_none_when_no_tenant_in_context(self):
+        """Manager returns empty queryset when no tenant in context."""
+        set_current_tenant(self.tenant1)
+        TestModel.objects.create(name="Object 1")
+
+        clear_current_tenant()
+        qs = TestModel.objects.all()
+        self.assertEqual(qs.count(), 0)
