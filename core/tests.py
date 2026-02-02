@@ -1,8 +1,10 @@
+import jwt
+from django.conf import settings
 from django.db import models
 from django.test import Client, TestCase
 
 from .context import clear_current_tenant, get_current_tenant, set_current_tenant
-from .models import Tenant, TenantAwareModel
+from .models import Tenant, TenantAwareModel, User
 
 
 class TenantMiddlewareIntegrationTests(TestCase):
@@ -144,3 +146,80 @@ class TenantAwareModelUnitTests(TestCase):
         clear_current_tenant()
         qs = TestModel.objects.all()
         self.assertEqual(qs.count(), 0)
+
+
+class JWTAuthenticationTests(TestCase):
+    """Tests for JWT authentication - DoD: login returns tokens, tenant_id in payload."""
+
+    def setUp(self):
+        self.client = Client()
+        self.tenant, _ = Tenant.objects.get_or_create(
+            subdomain="localhost",
+            defaults={"name": "Local Dev", "is_active": True},
+        )
+        self.user = User.objects.create_user(
+            email="owner@petshop.com",
+            password="testpass123",
+            role="OWNER",
+            tenant=self.tenant,
+        )
+
+    def test_login_returns_access_and_refresh_tokens(self):
+        """POST /auth/login returns access and refresh tokens."""
+        response = self.client.post(
+            "/api/auth/login/",
+            {"email": "owner@petshop.com", "password": "testpass123"},
+            content_type="application/json",
+            HTTP_HOST="localhost:8000",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("access", data)
+        self.assertIn("refresh", data)
+
+    def test_login_with_invalid_credentials_returns_401(self):
+        """POST /auth/login with wrong password returns 401."""
+        response = self.client.post(
+            "/api/auth/login/",
+            {"email": "owner@petshop.com", "password": "wrongpass"},
+            content_type="application/json",
+            HTTP_HOST="localhost:8000",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_access_token_contains_tenant_id(self):
+        """Access token payload contains tenant_id."""
+        response = self.client.post(
+            "/api/auth/login/",
+            {"email": "owner@petshop.com", "password": "testpass123"},
+            content_type="application/json",
+            HTTP_HOST="localhost:8000",
+        )
+        access_token = response.json()["access"]
+        payload = jwt.decode(
+            access_token,
+            settings.SIMPLE_JWT["SIGNING_KEY"],
+            algorithms=[settings.SIMPLE_JWT["ALGORITHM"]],
+        )
+        self.assertEqual(payload["tenant_id"], self.tenant.id)
+        self.assertEqual(payload["role"], "OWNER")
+        self.assertEqual(payload["email"], "owner@petshop.com")
+
+    def test_refresh_token_returns_new_access_token(self):
+        """POST /auth/refresh returns new access token."""
+        login_response = self.client.post(
+            "/api/auth/login/",
+            {"email": "owner@petshop.com", "password": "testpass123"},
+            content_type="application/json",
+            HTTP_HOST="localhost:8000",
+        )
+        refresh_token = login_response.json()["refresh"]
+
+        refresh_response = self.client.post(
+            "/api/auth/refresh/",
+            {"refresh": refresh_token},
+            content_type="application/json",
+            HTTP_HOST="localhost:8000",
+        )
+        self.assertEqual(refresh_response.status_code, 200)
+        self.assertIn("access", refresh_response.json())
