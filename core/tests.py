@@ -2,9 +2,11 @@ import jwt
 from django.conf import settings
 from django.db import models
 from django.test import Client, TestCase
+from rest_framework.test import APIClient, APIRequestFactory
 
 from .context import clear_current_tenant, get_current_tenant, set_current_tenant
 from .models import Tenant, TenantAwareModel, User
+from .permissions import IsOwner, IsOwnerOrAttendant
 
 
 class TenantMiddlewareIntegrationTests(TestCase):
@@ -223,3 +225,80 @@ class JWTAuthenticationTests(TestCase):
         )
         self.assertEqual(refresh_response.status_code, 200)
         self.assertIn("access", refresh_response.json())
+
+
+class PermissionClassesTests(TestCase):
+    """Unit tests for IsOwner and IsOwnerOrAttendant permissions."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        tenant = Tenant.objects.create(subdomain="permtenant", name="Tenant Perm")
+        self.owner = User.objects.create_user(
+            email="owner@test.com", password="pass123", role="OWNER", tenant=tenant
+        )
+        self.attendant = User.objects.create_user(
+            email="att@test.com", password="pass123", role="ATTENDANT", tenant=tenant
+        )
+        self.superuser = User.objects.create_superuser(
+            email="super@test.com", password="pass123", tenant=tenant
+        )
+
+    def test_is_owner_allows_owner_and_superuser(self):
+        request = self.factory.get("/dummy")
+        request.user = self.owner
+        self.assertTrue(IsOwner().has_permission(request, None))
+
+        request.user = self.superuser
+        self.assertTrue(IsOwner().has_permission(request, None))
+
+        request.user = self.attendant
+        self.assertFalse(IsOwner().has_permission(request, None))
+
+    def test_is_owner_or_attendant_allows_roles(self):
+        request = self.factory.get("/dummy")
+        request.user = self.owner
+        self.assertTrue(IsOwnerOrAttendant().has_permission(request, None))
+
+        request.user = self.attendant
+        self.assertTrue(IsOwnerOrAttendant().has_permission(request, None))
+
+        request.user = self.superuser
+        self.assertTrue(IsOwnerOrAttendant().has_permission(request, None))
+
+        request.user = None
+        self.assertFalse(IsOwnerOrAttendant().has_permission(request, None))
+
+
+class TenantCreateViewTests(TestCase):
+    """Integration tests ensuring only superuser can create tenants via API."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.superuser = User.objects.create_superuser(
+            email="super@admin.com", password="pass123"
+        )
+        tenant = Tenant.objects.create(subdomain="tenantcreatetest", name="T1")
+        self.owner = User.objects.create_user(
+            email="owner@tenant.com", password="pass123", role="OWNER", tenant=tenant
+        )
+
+    def test_superuser_can_create_tenant(self):
+        self.client.force_authenticate(user=self.superuser)
+        response = self.client.post(
+            "/api/tenants/",
+            {"name": "New Tenant", "subdomain": "newtenant", "is_active": True},
+            format="json",
+            HTTP_HOST="localhost:8000",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["subdomain"], "newtenant")
+
+    def test_owner_cannot_create_tenant(self):
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/tenants/",
+            {"name": "Another Tenant", "subdomain": "anothertenant"},
+            format="json",
+            HTTP_HOST="localhost:8000",
+        )
+        self.assertEqual(response.status_code, 403)

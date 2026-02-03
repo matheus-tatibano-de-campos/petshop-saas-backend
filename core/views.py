@@ -1,7 +1,12 @@
 from django.http import JsonResponse
+from rest_framework import generics, permissions
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from .serializers import CustomTokenObtainPairSerializer
+from .permissions import IsOwner
+from .serializers import (
+    CustomTokenObtainPairSerializer,
+    TenantSerializer,
+)
 
 
 def health(request):
@@ -25,3 +30,10 @@ class LoginView(TokenObtainPairView):
 class RefreshTokenView(TokenRefreshView):
     """POST /auth/refresh - returns new access token."""
     pass
+
+
+class TenantCreateView(generics.CreateAPIView):
+    """Endpoint to create new tenants (superuser only)."""
+
+    serializer_class = TenantSerializer
+    permission_classes = [permissions.IsAdminUser]
