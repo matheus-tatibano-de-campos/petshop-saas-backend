@@ -5,7 +5,7 @@ from django.test import Client, TestCase
 from rest_framework.test import APIClient, APIRequestFactory
 
 from .context import clear_current_tenant, get_current_tenant, set_current_tenant
-from .models import Customer, Pet, Service, Tenant, TenantAwareModel, User
+from .models import Appointment, Customer, Pet, Service, Tenant, TenantAwareModel, User
 from .permissions import IsOwner, IsOwnerOrAttendant
 
 
@@ -616,3 +616,179 @@ class ServiceAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["name"], "Ativo")
+
+
+class AppointmentEndTimeTests(TestCase):
+    """DoD: Creating appointment saves end_time automatically without passing in payload."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(subdomain="apt1", name="Tenant 1")
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="João",
+            cpf="39053344705",
+            email="joao@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Rex", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant,
+            name="Banho",
+            price=50,
+            duration_minutes=60,
+        )
+
+    def test_create_appointment_saves_end_time_automatically(self):
+        """end_time is computed from scheduled_at + service.duration_minutes, no payload needed."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        set_current_tenant(self.tenant)
+        scheduled_at = timezone.make_aware(timezone.datetime(2026, 2, 10, 14, 0, 0))
+        appt = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=scheduled_at,
+            status="PRE_BOOKED",
+        )
+        self.assertIsNotNone(appt.end_time)
+        expected_end = scheduled_at + timedelta(minutes=self.service.duration_minutes)
+        self.assertEqual(appt.end_time, expected_end)
+
+    def test_pre_book_endpoint_returns_end_time_without_payload(self):
+        """POST /appointments/pre-book/ returns end_time without client sending it."""
+        self.client = APIClient()
+        self.owner = User.objects.create_user(
+            email="owner@apt.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/appointments/pre-book/",
+            {
+                "pet_id": self.pet.id,
+                "service_id": self.service.id,
+                "scheduled_at": "2026-02-10T14:00:00",
+            },
+            format="json",
+            HTTP_HOST="apt1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertIn("appointment_id", response.data)
+        self.assertIn("end_time", response.data)
+        self.assertEqual(response.data["status"], "PRE_BOOKED")
+
+    def test_pre_book_same_slot_returns_409_conflict(self):
+        """Booking same pet+service+time twice returns 409 APPOINTMENT_CONFLICT."""
+        self.client = APIClient()
+        self.owner = User.objects.create_user(
+            email="owner2@apt.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.client.force_authenticate(user=self.owner)
+        payload = {
+            "pet_id": self.pet.id,
+            "service_id": self.service.id,
+            "scheduled_at": "2026-02-10T14:00:00",
+        }
+        r1 = self.client.post(
+            "/api/appointments/pre-book/",
+            payload,
+            format="json",
+            HTTP_HOST="apt1.localhost:8000",
+        )
+        self.assertEqual(r1.status_code, 201)
+        r2 = self.client.post(
+            "/api/appointments/pre-book/",
+            payload,
+            format="json",
+            HTTP_HOST="apt1.localhost:8000",
+        )
+        self.assertEqual(r2.status_code, 409)
+        self.assertEqual(r2.data["error"]["code"], "APPOINTMENT_CONFLICT")
+        self.assertIn("ocupado", r2.data["error"]["message"].lower())
+
+    def test_cancelled_appointment_does_not_block_same_slot(self):
+        """CANCELLED appointments do not block booking the same slot (DoD)."""
+        self.client = APIClient()
+        self.owner = User.objects.create_user(
+            email="owner3@apt.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.client.force_authenticate(user=self.owner)
+        payload = {
+            "pet_id": self.pet.id,
+            "service_id": self.service.id,
+            "scheduled_at": "2026-02-15T10:00:00",
+        }
+        r1 = self.client.post(
+            "/api/appointments/pre-book/",
+            payload,
+            format="json",
+            HTTP_HOST="apt1.localhost:8000",
+        )
+        self.assertEqual(r1.status_code, 201)
+        apt_id = r1.data["appointment_id"]
+        set_current_tenant(self.tenant)
+        Appointment.all_objects.filter(id=apt_id).update(status="CANCELLED")
+        r2 = self.client.post(
+            "/api/appointments/pre-book/",
+            payload,
+            format="json",
+            HTTP_HOST="apt1.localhost:8000",
+        )
+        self.assertEqual(r2.status_code, 201, "CANCELLED slot should allow new booking")
+
+    def test_expired_appointment_does_not_block_same_slot(self):
+        """EXPIRED appointments do not block booking the same slot (DoD)."""
+        self.client = APIClient()
+        self.owner = User.objects.create_user(
+            email="owner4@apt.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.client.force_authenticate(user=self.owner)
+        payload = {
+            "pet_id": self.pet.id,
+            "service_id": self.service.id,
+            "scheduled_at": "2026-02-16T14:00:00",
+        }
+        r1 = self.client.post(
+            "/api/appointments/pre-book/",
+            payload,
+            format="json",
+            HTTP_HOST="apt1.localhost:8000",
+        )
+        self.assertEqual(r1.status_code, 201)
+        apt_id = r1.data["appointment_id"]
+        set_current_tenant(self.tenant)
+        Appointment.all_objects.filter(id=apt_id).update(status="EXPIRED")
+        r2 = self.client.post(
+            "/api/appointments/pre-book/",
+            payload,
+            format="json",
+            HTTP_HOST="apt1.localhost:8000",
+        )
+        self.assertEqual(r2.status_code, 201, "EXPIRED slot should allow new booking")
+
+
+class ExceptionHandlerTests(TestCase):
+    """Tests for custom exception handler."""
+
+    def test_integrity_error_no_overlap_returns_409_schedule_conflict(self):
+        """IntegrityError from no_overlap constraint returns 409 SCHEDULE_CONFLICT."""
+        from django.db import IntegrityError
+        from rest_framework.request import Request
+        from rest_framework.views import APIView
+
+        from .exception_handler import custom_exception_handler
+
+        exc = IntegrityError(
+            'could not create exclusion constraint "no_overlap"\n'
+            "DETAIL: Key (tenant_id, tstzrange(...)) conflicts"
+        )
+        request = APIRequestFactory().get("/")
+        context = {"view": APIView(), "request": Request(request)}
+        response = custom_exception_handler(exc, context)
+        self.assertIsNotNone(response)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data["error"]["code"], "SCHEDULE_CONFLICT")
+        self.assertIn("Conflito", response.data["error"]["message"])

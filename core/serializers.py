@@ -1,8 +1,20 @@
+from datetime import timedelta
+
+from django.db import models
 from pycpfcnpj import cpfcnpj
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import Appointment, Customer, Pet, Service, Tenant
+
+
+class AppointmentConflict(APIException):
+    """Raised when scheduling would create an overlapping appointment."""
+
+    status_code = 409
+    default_detail = "Horário já ocupado"
+    default_code = "APPOINTMENT_CONFLICT"
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -153,6 +165,26 @@ class PreBookAppointmentSerializer(serializers.Serializer):
         if service.tenant_id != tenant.id:
             raise serializers.ValidationError("Serviço pertence a outro tenant")
         return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        request = self.context.get("request")
+        if not request or not hasattr(request, "tenant"):
+            return attrs
+        pet_id = attrs["pet_id"]
+        service_id = attrs["service_id"]
+        scheduled_at = attrs["scheduled_at"]
+        service = Service.objects.get(pk=service_id)
+        end_time = scheduled_at + timedelta(minutes=service.duration_minutes)
+        overlapping = Appointment.objects.filter(
+            models.Q(pet_id=pet_id) | models.Q(service_id=service_id)
+        ).exclude(status__in=["CANCELLED", "EXPIRED"]).filter(
+            scheduled_at__lt=end_time,
+            end_time__gt=scheduled_at,
+        )
+        if overlapping.exists():
+            raise AppointmentConflict()
+        return attrs
 
     def create(self, validated_data):
         request = self.context["request"]

@@ -36,6 +36,8 @@ def _infer_code(message):
         return "INVALID_PRICE"
     if "duração deve ser" in msg_lower:
         return "INVALID_DURATION"
+    if "horário já ocupado" in msg_lower:
+        return "APPOINTMENT_CONFLICT"
     return "VALIDATION_ERROR"
 
 
@@ -57,9 +59,15 @@ def custom_exception_handler(exc, context):
 
 
 def _integrity_error_response(exc, context):
-    """Handle IntegrityError (e.g. unique_together violation) as CPF_DUPLICATE."""
+    """Handle IntegrityError: no_overlap -> SCHEDULE_CONFLICT 409, else CPF_DUPLICATE 400."""
     from rest_framework.response import Response
 
+    err_str = str(exc).lower()
+    if "no_overlap" in err_str or "exclusion" in err_str:
+        return Response(
+            {"error": {"code": "SCHEDULE_CONFLICT", "message": "Conflito de horário"}},
+            status=409,
+        )
     return Response(
         {"error": {"code": "CPF_DUPLICATE", "message": "CPF já cadastrado neste tenant"}},
         status=400,

@@ -1,9 +1,19 @@
 from datetime import timedelta
 
 from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.contrib.postgres.constraints import ExclusionConstraint
+from django.contrib.postgres.fields import DateTimeRangeField, RangeBoundary, RangeOperators
 from django.db import models
+from django.db.models import Func, Q
 
 from .context import get_current_tenant
+
+
+class TsTzRange(Func):
+    """PostgreSQL tsrange from two DateTime columns. Bounds '[)' = inclusive lower, exclusive upper."""
+
+    function = "TSTZRANGE"
+    output_field = DateTimeRangeField()
 
 
 class UserManager(BaseUserManager):
@@ -167,11 +177,22 @@ class Appointment(TenantAwareModel):
 
     class Meta:
         ordering = ["scheduled_at"]
+        constraints = [
+            ExclusionConstraint(
+                name="no_overlap",
+                expressions=[
+                    ("tenant", RangeOperators.EQUAL),
+                    (TsTzRange("scheduled_at", "end_time", RangeBoundary()), RangeOperators.OVERLAPS),
+                ],
+                condition=~Q(status__in=["CANCELLED", "EXPIRED"]),
+            ),
+        ]
 
     def __str__(self):
         return f"{self.pet} - {self.service} @ {self.scheduled_at}"
 
     def save(self, *args, **kwargs):
         if self.scheduled_at and self.service_id:
-            self.end_time = self.scheduled_at + timedelta(minutes=self.service.duration_minutes)
+            service = Service.objects.only("duration_minutes").get(pk=self.service_id)
+            self.end_time = self.scheduled_at + timedelta(minutes=service.duration_minutes)
         super().save(*args, **kwargs)
