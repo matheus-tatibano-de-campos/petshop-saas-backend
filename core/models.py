@@ -128,3 +128,16 @@ class Pet(TenantAwareModel):
 
     def __str__(self):
         return f"{self.name} ({self.get_species_display()})"
+
+
+class Service(TenantAwareModel):
+    """Service with price and duration. AC: price (Decimal), duration (int minutes)."""
+
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    duration_minutes = models.PositiveIntegerField()
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.name
