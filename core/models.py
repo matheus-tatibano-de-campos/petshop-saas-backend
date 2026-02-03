@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 
@@ -141,3 +143,31 @@ class Service(TenantAwareModel):
 
     def __str__(self):
         return self.name
+
+
+class Appointment(TenantAwareModel):
+    """Appointment: pet, service, scheduled_at. end_time computed from service duration."""
+
+    STATUS_CHOICES = [
+        ("PRE_BOOKED", "Pré-agendado"),
+        ("CONFIRMED", "Confirmado"),
+    ]
+
+    pet = models.ForeignKey(Pet, on_delete=models.CASCADE, related_name="appointments")
+    service = models.ForeignKey(Service, on_delete=models.CASCADE, related_name="appointments")
+    scheduled_at = models.DateTimeField()
+    end_time = models.DateTimeField(editable=False)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PRE_BOOKED")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["scheduled_at"]
+
+    def __str__(self):
+        return f"{self.pet} - {self.service} @ {self.scheduled_at}"
+
+    def save(self, *args, **kwargs):
+        if self.scheduled_at and self.service_id:
+            self.end_time = self.scheduled_at + timedelta(minutes=self.service.duration_minutes)
+        super().save(*args, **kwargs)

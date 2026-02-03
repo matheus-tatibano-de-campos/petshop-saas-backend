@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Customer, Pet, Service, Tenant
+from .models import Appointment, Customer, Pet, Service, Tenant
 
 
 @admin.register(Tenant)
@@ -28,3 +28,10 @@ class ServiceAdmin(admin.ModelAdmin):
     list_display = ["name", "price", "duration_minutes", "is_active", "tenant"]
     list_filter = ["is_active"]
     search_fields = ["name"]
+
+
+@admin.register(Appointment)
+class AppointmentAdmin(admin.ModelAdmin):
+    list_display = ["pet", "service", "scheduled_at", "end_time", "status", "tenant"]
+    list_filter = ["status"]
+    search_fields = ["pet__name"]
