@@ -2,7 +2,7 @@ from pycpfcnpj import cpfcnpj
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Customer, Tenant
+from .models import Customer, Pet, Tenant
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -56,6 +56,38 @@ class CustomerSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         tenant = self.context["request"].tenant
         return Customer.objects.create(tenant=tenant, **validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop("tenant", None)
+        return super().update(instance, validated_data)
+
+
+class PetSerializer(serializers.ModelSerializer):
+    """Serializer for Pet CRUD. Validates customer_id exists and belongs to same tenant."""
+
+    customer = serializers.PrimaryKeyRelatedField(
+        queryset=Customer.all_objects.all(),
+        allow_null=False,
+    )
+
+    class Meta:
+        model = Pet
+        fields = ["id", "name", "species", "breed", "birth_date", "customer"]
+        read_only_fields = ["id"]
+
+    def validate_customer(self, value):
+        """Ensure customer belongs to request tenant (CUSTOMER_WRONG_TENANT if not)."""
+        request = self.context.get("request")
+        if not request or not hasattr(request, "tenant"):
+            return value
+        tenant = request.tenant
+        if value.tenant_id != tenant.id:
+            raise serializers.ValidationError("Customer pertence a outro tenant")
+        return value
+
+    def create(self, validated_data):
+        tenant = self.context["request"].tenant
+        return Pet.objects.create(tenant=tenant, **validated_data)
 
     def update(self, instance, validated_data):
         validated_data.pop("tenant", None)

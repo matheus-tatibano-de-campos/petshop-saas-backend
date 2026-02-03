@@ -30,6 +30,8 @@ def _infer_code(message):
         return "INVALID_CPF"
     if "cpf já cadastrado" in msg_lower or "cpf ja cadastrado" in msg_lower:
         return "CPF_DUPLICATE"
+    if "customer pertence a outro tenant" in msg_lower:
+        return "CUSTOMER_WRONG_TENANT"
     return "VALIDATION_ERROR"
 
 

@@ -420,3 +420,116 @@ class PetModelTests(TestCase):
 
         self.customer.delete()
         self.assertEqual(Pet.all_objects.filter(customer_id=customer_id).count(), 0)
+
+
+class PetAPITests(TestCase):
+    """Integration tests for Pet CRUD. DoD: CUSTOMER_WRONG_TENANT, cascade delete."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.tenant1 = Tenant.objects.create(subdomain="pet1", name="Tenant 1")
+        self.tenant2 = Tenant.objects.create(subdomain="pet2", name="Tenant 2")
+        self.owner1 = User.objects.create_user(
+            email="owner1@pet.com", password="pass123", role="OWNER", tenant=self.tenant1
+        )
+        self.owner2 = User.objects.create_user(
+            email="owner2@pet.com", password="pass123", role="OWNER", tenant=self.tenant2
+        )
+        self.cust1 = Customer.all_objects.create(
+            tenant=self.tenant1, name="João", cpf="39053344705",
+            email="joao@example.com", phone="11999999999",
+        )
+        self.cust2 = Customer.all_objects.create(
+            tenant=self.tenant2, name="Maria", cpf="52998224725",
+            email="maria@example.com", phone="11888888888",
+        )
+
+    def test_create_pet_success(self):
+        """Create pet linked to customer in same tenant."""
+        self.client.force_authenticate(user=self.owner1)
+        response = self.client.post(
+            "/api/pets/",
+            {
+                "name": "Rex",
+                "species": "DOG",
+                "breed": "Labrador",
+                "birth_date": "2020-01-15",
+                "customer": self.cust1.id,
+            },
+            format="json",
+            HTTP_HOST="pet1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["name"], "Rex")
+        self.assertEqual(response.data["species"], "DOG")
+        self.assertEqual(response.data["customer"], self.cust1.id)
+        self.assertEqual(Pet.all_objects.count(), 1)
+
+    def test_create_pet_customer_wrong_tenant_returns_400_standard_format(self):
+        """Link pet to customer from another tenant -> 400 CUSTOMER_WRONG_TENANT."""
+        self.client.force_authenticate(user=self.owner1)
+        response = self.client.post(
+            "/api/pets/",
+            {
+                "name": "Rex",
+                "species": "DOG",
+                "breed": "Labrador",
+                "customer": self.cust2.id,
+            },
+            format="json",
+            HTTP_HOST="pet1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["error"]["code"], "CUSTOMER_WRONG_TENANT")
+        self.assertIn("outro tenant", response.data["error"]["message"].lower())
+        self.assertEqual(Pet.all_objects.count(), 0)
+
+    def test_update_pet_customer_wrong_tenant_returns_400(self):
+        """Update pet to link to customer from another tenant -> 400 CUSTOMER_WRONG_TENANT."""
+        set_current_tenant(self.tenant1)
+        pet = Pet.objects.create(
+            name="Rex", species="DOG", breed="Labrador", customer=self.cust1
+        )
+        self.client.force_authenticate(user=self.owner1)
+        response = self.client.put(
+            f"/api/pets/{pet.id}/",
+            {
+                "name": "Rex",
+                "species": "DOG",
+                "breed": "Labrador",
+                "customer": self.cust2.id,
+            },
+            format="json",
+            HTTP_HOST="pet1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["error"]["code"], "CUSTOMER_WRONG_TENANT")
+
+    def test_list_pets_only_current_tenant(self):
+        """List returns only pets from current tenant."""
+        set_current_tenant(self.tenant1)
+        Pet.objects.create(name="Rex", species="DOG", breed="Labrador", customer=self.cust1)
+        set_current_tenant(self.tenant2)
+        Pet.objects.create(name="Mimi", species="CAT", breed="Siamês", customer=self.cust2)
+
+        self.client.force_authenticate(user=self.owner1)
+        response = self.client.get("/api/pets/", HTTP_HOST="pet1.localhost:8000")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "Rex")
+
+    def test_delete_customer_removes_pets_api(self):
+        """Delete customer via API -> associated pets are deleted."""
+        set_current_tenant(self.tenant1)
+        pet = Pet.objects.create(
+            name="Rex", species="DOG", breed="Labrador", customer=self.cust1
+        )
+        self.assertEqual(Pet.all_objects.count(), 1)
+
+        self.client.force_authenticate(user=self.owner1)
+        del_resp = self.client.delete(
+            f"/api/customers/{self.cust1.id}/",
+            HTTP_HOST="pet1.localhost:8000",
+        )
+        self.assertEqual(del_resp.status_code, 204)
+        self.assertEqual(Pet.all_objects.count(), 0)

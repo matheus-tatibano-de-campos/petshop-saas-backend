@@ -5,9 +5,10 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .serializers import (
     CustomTokenObtainPairSerializer,
     CustomerSerializer,
+    PetSerializer,
     TenantSerializer,
 )
-from .models import Customer
+from .models import Customer, Pet
 from .permissions import IsOwnerOrAttendant
 
 
@@ -49,6 +50,21 @@ class CustomerViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Customer.objects.all()
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["request"] = self.request
+        return context
+
+
+class PetViewSet(viewsets.ModelViewSet):
+    """CRUD for pets. GET/POST /pets, GET/PUT/DELETE /pets/{id}. Pet must be linked to customer in same tenant."""
+
+    serializer_class = PetSerializer
+    permission_classes = [IsOwnerOrAttendant]
+
+    def get_queryset(self):
+        return Pet.objects.all()
 
     def get_serializer_context(self):
         context = super().get_serializer_context()

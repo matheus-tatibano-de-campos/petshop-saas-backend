@@ -1,0 +1,178 @@
+{
+  "info": {
+    "name": "PetShop - Pets CRUD",
+    "description": "Cenários: criar pet, vincular a outro tenant (falha), deletar customer (pets deletados)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000/api"
+    },
+    {
+      "key": "accessToken",
+      "value": ""
+    },
+    {
+      "key": "subdomain",
+      "value": "localhost"
+    },
+    {
+      "key": "customerId",
+      "value": ""
+    },
+    {
+      "key": "petId",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Login",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{baseUrl}}/auth/login/",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"owner@example.com\",\n  \"password\": \"pass123\"\n}"
+        },
+        "description": "Obter access_token para usar nos demais requests. Ajuste email/senha conforme seu usuário."
+      }
+    },
+    {
+      "name": "1. Criar customer (pré-requisito)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{baseUrl}}/customers/",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"João Silva\",\n  \"cpf\": \"39053344705\",\n  \"email\": \"joao@example.com\",\n  \"phone\": \"11999999999\"\n}"
+        },
+        "description": "Criar customer no tenant atual. Use o customer_id da resposta para criar pets."
+      }
+    },
+    {
+      "name": "2. Criar pet (sucesso)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{baseUrl}}/pets/",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Rex\",\n  \"species\": \"DOG\",\n  \"breed\": \"Labrador\",\n  \"birth_date\": \"2020-01-15\",\n  \"customer\": {{customerId}}\n}"
+        },
+        "description": "Criar pet vinculado a customer do mesmo tenant. Espécies: DOG, CAT, OTHER."
+      }
+    },
+    {
+      "name": "3. Vincular pet a outro tenant (falha)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{baseUrl}}/pets/",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Rex\",\n  \"species\": \"DOG\",\n  \"breed\": \"Labrador\",\n  \"customer\": 999\n}"
+        },
+        "description": "Deve retornar 400 com {\"error\": {\"code\": \"CUSTOMER_WRONG_TENANT\", \"message\": \"Customer pertence a outro tenant\"}}. Use customer_id de outro tenant."
+      }
+    },
+    {
+      "name": "4. Listar pets",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{baseUrl}}/pets/",
+        "description": "Lista pets do tenant atual."
+      }
+    },
+    {
+      "name": "5. Obter pet por ID",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{baseUrl}}/pets/{{petId}}/",
+        "description": "Retorna detalhes de um pet."
+      }
+    },
+    {
+      "name": "6. Atualizar pet",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{baseUrl}}/pets/{{petId}}/",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Rex Atualizado\",\n  \"species\": \"DOG\",\n  \"breed\": \"Labrador Retriever\",\n  \"birth_date\": \"2020-01-15\",\n  \"customer\": {{customerId}}\n}"
+        }
+      }
+    },
+    {
+      "name": "7. Deletar customer (pets deletados)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{accessToken}}"
+          }
+        ],
+        "url": "{{baseUrl}}/customers/{{customerId}}/",
+        "description": "Deletar customer remove todos os pets associados (CASCADE). Execute 4. Listar pets antes e depois para confirmar."
+      }
+    }
+  ]
+}
