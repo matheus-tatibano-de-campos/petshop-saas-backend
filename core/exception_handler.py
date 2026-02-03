@@ -32,6 +32,10 @@ def _infer_code(message):
         return "CPF_DUPLICATE"
     if "customer pertence a outro tenant" in msg_lower:
         return "CUSTOMER_WRONG_TENANT"
+    if "preço deve ser" in msg_lower:
+        return "INVALID_PRICE"
+    if "duração deve ser" in msg_lower:
+        return "INVALID_DURATION"
     return "VALIDATION_ERROR"
 
 

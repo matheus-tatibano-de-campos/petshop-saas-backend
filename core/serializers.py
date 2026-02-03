@@ -2,7 +2,7 @@ from pycpfcnpj import cpfcnpj
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Customer, Pet, Tenant
+from .models import Customer, Pet, Service, Tenant
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -88,6 +88,33 @@ class PetSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         tenant = self.context["request"].tenant
         return Pet.objects.create(tenant=tenant, **validated_data)
+
+    def update(self, instance, validated_data):
+        validated_data.pop("tenant", None)
+        return super().update(instance, validated_data)
+
+
+class ServiceSerializer(serializers.ModelSerializer):
+    """Serializer for Service CRUD. Validates price >= 0, duration_minutes > 0."""
+
+    class Meta:
+        model = Service
+        fields = ["id", "name", "description", "price", "duration_minutes", "is_active"]
+        read_only_fields = ["id"]
+
+    def validate_price(self, value):
+        if value is not None and value < 0:
+            raise serializers.ValidationError("Preço deve ser maior ou igual a zero")
+        return value
+
+    def validate_duration_minutes(self, value):
+        if value is not None and value <= 0:
+            raise serializers.ValidationError("Duração deve ser maior que zero")
+        return value
+
+    def create(self, validated_data):
+        tenant = self.context["request"].tenant
+        return Service.objects.create(tenant=tenant, **validated_data)
 
     def update(self, instance, validated_data):
         validated_data.pop("tenant", None)

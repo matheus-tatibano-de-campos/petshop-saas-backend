@@ -6,6 +6,7 @@ from . import views
 router = DefaultRouter()
 router.register("customers", views.CustomerViewSet, basename="customer")
 router.register("pets", views.PetViewSet, basename="pet")
+router.register("services", views.ServiceViewSet, basename="service")
 
 urlpatterns = [
     path("health/", views.health),

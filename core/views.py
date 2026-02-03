@@ -6,9 +6,10 @@ from .serializers import (
     CustomTokenObtainPairSerializer,
     CustomerSerializer,
     PetSerializer,
+    ServiceSerializer,
     TenantSerializer,
 )
-from .models import Customer, Pet
+from .models import Customer, Pet, Service
 from .permissions import IsOwnerOrAttendant
 
 
@@ -65,6 +66,25 @@ class PetViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Pet.objects.all()
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["request"] = self.request
+        return context
+
+
+class ServiceViewSet(viewsets.ModelViewSet):
+    """CRUD for services. Filter ?is_active=true|false. Validates price >= 0, duration_minutes > 0."""
+
+    serializer_class = ServiceSerializer
+    permission_classes = [IsOwnerOrAttendant]
+
+    def get_queryset(self):
+        qs = Service.objects.all()
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active.lower() == "true")
+        return qs
 
     def get_serializer_context(self):
         context = super().get_serializer_context()

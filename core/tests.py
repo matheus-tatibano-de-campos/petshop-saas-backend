@@ -5,7 +5,7 @@ from django.test import Client, TestCase
 from rest_framework.test import APIClient, APIRequestFactory
 
 from .context import clear_current_tenant, get_current_tenant, set_current_tenant
-from .models import Customer, Pet, Tenant, TenantAwareModel, User
+from .models import Customer, Pet, Service, Tenant, TenantAwareModel, User
 from .permissions import IsOwner, IsOwnerOrAttendant
 
 
@@ -533,3 +533,86 @@ class PetAPITests(TestCase):
         )
         self.assertEqual(del_resp.status_code, 204)
         self.assertEqual(Pet.all_objects.count(), 0)
+
+
+class ServiceAPITests(TestCase):
+    """Integration tests for Service CRUD. DoD: price=-10, duration=0 return 400 with standardized error."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.tenant = Tenant.objects.create(subdomain="svc1", name="Tenant 1")
+        self.owner = User.objects.create_user(
+            email="owner@svc.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+
+    def test_price_negative_returns_400_standard_format(self):
+        """price=-10 returns 400 with standardized error format."""
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/services/",
+            {
+                "name": "Teste",
+                "description": "Desc",
+                "price": "-10",
+                "duration_minutes": 60,
+            },
+            format="json",
+            HTTP_HOST="svc1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["error"]["code"], "INVALID_PRICE")
+        self.assertIn("preço", response.data["error"]["message"].lower())
+
+    def test_duration_zero_returns_400_standard_format(self):
+        """duration=0 returns 400 with standardized error format."""
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/services/",
+            {
+                "name": "Teste",
+                "description": "Desc",
+                "price": "50.00",
+                "duration_minutes": 0,
+            },
+            format="json",
+            HTTP_HOST="svc1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["error"]["code"], "INVALID_DURATION")
+        self.assertIn("duração", response.data["error"]["message"].lower())
+
+    def test_create_service_success(self):
+        """Create service with valid data."""
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/services/",
+            {
+                "name": "Banho Premium",
+                "description": "Banho completo",
+                "price": "75.00",
+                "duration_minutes": 90,
+            },
+            format="json",
+            HTTP_HOST="svc1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["name"], "Banho Premium")
+        self.assertEqual(response.data["price"], "75.00")
+        self.assertEqual(response.data["duration_minutes"], 90)
+
+    def test_filter_is_active_true(self):
+        """Filter ?is_active=true returns only active services."""
+        set_current_tenant(self.tenant)
+        Service.objects.create(
+            name="Ativo", price=50, duration_minutes=60, is_active=True
+        )
+        Service.objects.create(
+            name="Inativo", price=30, duration_minutes=30, is_active=False
+        )
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.get(
+            "/api/services/?is_active=true", HTTP_HOST="svc1.localhost:8000"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "Ativo")
