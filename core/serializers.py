@@ -2,7 +2,7 @@ from pycpfcnpj import cpfcnpj
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Customer, Pet, Service, Tenant
+from .models import Appointment, Customer, Pet, Service, Tenant
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -119,3 +119,51 @@ class ServiceSerializer(serializers.ModelSerializer):
     def update(self, instance, validated_data):
         validated_data.pop("tenant", None)
         return super().update(instance, validated_data)
+
+
+class PreBookAppointmentSerializer(serializers.Serializer):
+    """Serializer for POST /appointments/pre-book/. Validates pet and service exist in tenant."""
+
+    pet_id = serializers.IntegerField()
+    service_id = serializers.IntegerField()
+    scheduled_at = serializers.DateTimeField()
+
+    def validate_pet_id(self, value):
+        request = self.context.get("request")
+        if not request or not hasattr(request, "tenant"):
+            return value
+        tenant = request.tenant
+        try:
+            pet = Pet.objects.get(pk=value)
+        except Pet.DoesNotExist:
+            raise serializers.ValidationError("Pet não encontrado")
+        if pet.tenant_id != tenant.id:
+            raise serializers.ValidationError("Pet pertence a outro tenant")
+        return value
+
+    def validate_service_id(self, value):
+        request = self.context.get("request")
+        if not request or not hasattr(request, "tenant"):
+            return value
+        tenant = request.tenant
+        try:
+            service = Service.objects.get(pk=value)
+        except Service.DoesNotExist:
+            raise serializers.ValidationError("Serviço não encontrado")
+        if service.tenant_id != tenant.id:
+            raise serializers.ValidationError("Serviço pertence a outro tenant")
+        return value
+
+    def create(self, validated_data):
+        request = self.context["request"]
+        tenant = request.tenant
+        pet = Pet.objects.get(pk=validated_data["pet_id"])
+        service = Service.objects.get(pk=validated_data["service_id"])
+        scheduled_at = validated_data["scheduled_at"]
+        return Appointment.objects.create(
+            tenant=tenant,
+            pet=pet,
+            service=service,
+            scheduled_at=scheduled_at,
+            status="PRE_BOOKED",
+        )

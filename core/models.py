@@ -151,6 +151,10 @@ class Appointment(TenantAwareModel):
     STATUS_CHOICES = [
         ("PRE_BOOKED", "Pré-agendado"),
         ("CONFIRMED", "Confirmado"),
+        ("EXPIRED", "Expirado"),
+        ("CANCELLED", "Cancelado"),
+        ("COMPLETED", "Concluído"),
+        ("NO_SHOW", "Não compareceu"),
     ]
 
     pet = models.ForeignKey(Pet, on_delete=models.CASCADE, related_name="appointments")

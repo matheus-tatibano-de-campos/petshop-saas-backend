@@ -2,10 +2,13 @@ from django.http import JsonResponse
 from rest_framework import generics, permissions, viewsets
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
+from rest_framework.response import Response
+
 from .serializers import (
     CustomTokenObtainPairSerializer,
     CustomerSerializer,
     PetSerializer,
+    PreBookAppointmentSerializer,
     ServiceSerializer,
     TenantSerializer,
 )
@@ -90,3 +93,23 @@ class ServiceViewSet(viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
+
+
+class PreBookAppointmentView(generics.CreateAPIView):
+    """POST /appointments/pre-book - creates appointment with status=PRE_BOOKED."""
+
+    serializer_class = PreBookAppointmentSerializer
+    permission_classes = [IsOwnerOrAttendant]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        appointment = serializer.save()
+        return Response(
+            {
+                "appointment_id": appointment.id,
+                "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
+                "status": appointment.status,
+            },
+            status=201,
+        )
