@@ -68,6 +68,7 @@ class TenantAwareModel(models.Model):
         "Tenant", on_delete=models.CASCADE
     )
     objects = TenantAwareManager()
+    all_objects = models.Manager()
 
     class Meta:
         abstract = True
@@ -89,3 +90,20 @@ class Tenant(models.Model):
 
     def __str__(self):
         return self.subdomain
+
+
+class Customer(TenantAwareModel):
+    """Customer linked to tenant with CPF uniqueness per tenant."""
+
+    name = models.CharField(max_length=200)
+    cpf = models.CharField(max_length=11)
+    email = models.EmailField()
+    phone = models.CharField(max_length=20)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("cpf", "tenant")
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.name} ({self.cpf})"

@@ -5,7 +5,7 @@ from django.test import Client, TestCase
 from rest_framework.test import APIClient, APIRequestFactory
 
 from .context import clear_current_tenant, get_current_tenant, set_current_tenant
-from .models import Tenant, TenantAwareModel, User
+from .models import Customer, Tenant, TenantAwareModel, User
 from .permissions import IsOwner, IsOwnerOrAttendant
 
 
@@ -302,3 +302,88 @@ class TenantCreateViewTests(TestCase):
             HTTP_HOST="localhost:8000",
         )
         self.assertEqual(response.status_code, 403)
+
+
+class CustomerAPITests(TestCase):
+    """Integration tests for Customer CRUD."""
+
+    valid_cpf = "39053344705"
+
+    def setUp(self):
+        self.client = APIClient()
+        self.tenant1 = Tenant.objects.create(subdomain="cust1", name="Tenant 1")
+        self.tenant2 = Tenant.objects.create(subdomain="cust2", name="Tenant 2")
+        self.owner1 = User.objects.create_user(
+            email="owner1@tenant.com", password="pass123", role="OWNER", tenant=self.tenant1
+        )
+        self.owner2 = User.objects.create_user(
+            email="owner2@tenant.com", password="pass123", role="OWNER", tenant=self.tenant2
+        )
+
+    def test_create_customer_with_valid_cpf(self):
+        self.client.force_authenticate(user=self.owner1)
+        response = self.client.post(
+            "/api/customers/",
+            {"name": "João", "cpf": self.valid_cpf, "email": "joao@example.com", "phone": "11999999999"},
+            format="json",
+            HTTP_HOST="cust1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["cpf"], self.valid_cpf)
+        self.assertEqual(Customer.all_objects.count(), 1)
+
+    def test_create_customer_with_invalid_cpf_returns_400(self):
+        self.client.force_authenticate(user=self.owner1)
+        response = self.client.post(
+            "/api/customers/",
+            {"name": "Maria", "cpf": "12345678900", "email": "maria@example.com", "phone": "11888888888"},
+            format="json",
+            HTTP_HOST="cust1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cpf", response.data)
+
+    def test_duplicate_cpf_same_tenant_returns_400(self):
+        self.client.force_authenticate(user=self.owner1)
+        payload = {"name": "João", "cpf": self.valid_cpf, "email": "joao@example.com", "phone": "11999999999"}
+        self.client.post("/api/customers/", payload, format="json", HTTP_HOST="cust1.localhost:8000")
+        response = self.client.post("/api/customers/", payload, format="json", HTTP_HOST="cust1.localhost:8000")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("cpf", response.data)
+
+    def test_duplicate_cpf_different_tenants_allowed(self):
+        self.client.force_authenticate(user=self.owner1)
+        payload = {"name": "João", "cpf": self.valid_cpf, "email": "joao@example.com", "phone": "11999999999"}
+        self.client.post("/api/customers/", payload, format="json", HTTP_HOST="cust1.localhost:8000")
+
+        self.client.force_authenticate(user=self.owner2)
+        response = self.client.post(
+            "/api/customers/",
+            payload,
+            format="json",
+            HTTP_HOST="cust2.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Customer.all_objects.count(), 2)
+
+    def test_list_returns_only_current_tenant_customers(self):
+        self.client.force_authenticate(user=self.owner1)
+        self.client.post(
+            "/api/customers/",
+            {"name": "João", "cpf": self.valid_cpf, "email": "joao@example.com", "phone": "11999999999"},
+            format="json",
+            HTTP_HOST="cust1.localhost:8000",
+        )
+        self.client.force_authenticate(user=self.owner2)
+        self.client.post(
+            "/api/customers/",
+            {"name": "Maria", "cpf": "52998224725", "email": "maria@example.com", "phone": "11888888888"},
+            format="json",
+            HTTP_HOST="cust2.localhost:8000",
+        )
+
+        self.client.force_authenticate(user=self.owner1)
+        response = self.client.get("/api/customers/", HTTP_HOST="cust1.localhost:8000")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "João")

@@ -1,12 +1,14 @@
 from django.http import JsonResponse
-from rest_framework import generics, permissions
+from rest_framework import generics, permissions, viewsets
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from .permissions import IsOwner
 from .serializers import (
     CustomTokenObtainPairSerializer,
+    CustomerSerializer,
     TenantSerializer,
 )
+from .models import Customer
+from .permissions import IsOwnerOrAttendant
 
 
 def health(request):
@@ -37,3 +39,18 @@ class TenantCreateView(generics.CreateAPIView):
 
     serializer_class = TenantSerializer
     permission_classes = [permissions.IsAdminUser]
+
+
+class CustomerViewSet(viewsets.ModelViewSet):
+    """CRUD for customers scoped by tenant."""
+
+    serializer_class = CustomerSerializer
+    permission_classes = [IsOwnerOrAttendant]
+
+    def get_queryset(self):
+        return Customer.objects.all()
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context["request"] = self.request
+        return context
