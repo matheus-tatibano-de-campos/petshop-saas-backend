@@ -107,3 +107,24 @@ class Customer(TenantAwareModel):
 
     def __str__(self):
         return f"{self.name} ({self.cpf})"
+
+
+class Pet(TenantAwareModel):
+    """Pet linked to a customer. Cascade delete when customer is removed."""
+
+    SPECIES_CHOICES = [
+        ("DOG", "Cachorro"),
+        ("CAT", "Gato"),
+        ("OTHER", "Outro"),
+    ]
+
+    name = models.CharField(max_length=200)
+    species = models.CharField(max_length=10, choices=SPECIES_CHOICES)
+    breed = models.CharField(max_length=100)
+    birth_date = models.DateField(null=True, blank=True)
+    customer = models.ForeignKey(
+        Customer, on_delete=models.CASCADE, related_name="pets"
+    )
+
+    def __str__(self):
+        return f"{self.name} ({self.get_species_display()})"

@@ -5,7 +5,7 @@ from django.test import Client, TestCase
 from rest_framework.test import APIClient, APIRequestFactory
 
 from .context import clear_current_tenant, get_current_tenant, set_current_tenant
-from .models import Customer, Tenant, TenantAwareModel, User
+from .models import Customer, Pet, Tenant, TenantAwareModel, User
 from .permissions import IsOwner, IsOwnerOrAttendant
 
 
@@ -389,3 +389,34 @@ class CustomerAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["name"], "João")
+
+
+class PetModelTests(TestCase):
+    """Tests for Pet model - DoD: cascade delete when customer is removed."""
+
+    def setUp(self):
+        self.tenant, _ = Tenant.objects.get_or_create(
+            subdomain="localhost", defaults={"name": "Local Dev", "is_active": True}
+        )
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="João",
+            cpf="39053344705",
+            email="joao@example.com",
+            phone="11999999999",
+        )
+
+    def test_delete_customer_removes_pets(self):
+        """Deleting a customer removes associated pets (CASCADE)."""
+        set_current_tenant(self.tenant)
+        Pet.objects.create(
+            name="Rex", species="DOG", breed="Labrador", customer=self.customer
+        )
+        Pet.objects.create(
+            name="Mimi", species="CAT", breed="Siamês", customer=self.customer
+        )
+        customer_id = self.customer.id
+        self.assertEqual(Pet.all_objects.filter(customer_id=customer_id).count(), 2)
+
+        self.customer.delete()
+        self.assertEqual(Pet.all_objects.filter(customer_id=customer_id).count(), 0)

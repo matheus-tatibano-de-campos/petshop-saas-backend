@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Customer, Tenant
+from .models import Customer, Pet, Tenant
 
 
 @admin.register(Tenant)
@@ -14,3 +14,10 @@ class TenantAdmin(admin.ModelAdmin):
 class CustomerAdmin(admin.ModelAdmin):
     list_display = ["name", "cpf", "email", "tenant", "created_at"]
     search_fields = ["name", "cpf", "email"]
+
+
+@admin.register(Pet)
+class PetAdmin(admin.ModelAdmin):
+    list_display = ["name", "species", "breed", "customer", "tenant"]
+    list_filter = ["species"]
+    search_fields = ["name", "breed"]
