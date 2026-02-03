@@ -332,7 +332,7 @@ class CustomerAPITests(TestCase):
         self.assertEqual(response.data["cpf"], self.valid_cpf)
         self.assertEqual(Customer.all_objects.count(), 1)
 
-    def test_create_customer_with_invalid_cpf_returns_400(self):
+    def test_create_customer_with_invalid_cpf_returns_400_standard_format(self):
         self.client.force_authenticate(user=self.owner1)
         response = self.client.post(
             "/api/customers/",
@@ -341,15 +341,17 @@ class CustomerAPITests(TestCase):
             HTTP_HOST="cust1.localhost:8000",
         )
         self.assertEqual(response.status_code, 400)
-        self.assertIn("cpf", response.data)
+        self.assertEqual(response.data["error"]["code"], "INVALID_CPF")
+        self.assertIn("inválido", response.data["error"]["message"].lower())
 
-    def test_duplicate_cpf_same_tenant_returns_400(self):
+    def test_duplicate_cpf_same_tenant_returns_400_standard_format(self):
         self.client.force_authenticate(user=self.owner1)
         payload = {"name": "João", "cpf": self.valid_cpf, "email": "joao@example.com", "phone": "11999999999"}
         self.client.post("/api/customers/", payload, format="json", HTTP_HOST="cust1.localhost:8000")
         response = self.client.post("/api/customers/", payload, format="json", HTTP_HOST="cust1.localhost:8000")
         self.assertEqual(response.status_code, 400)
-        self.assertIn("cpf", response.data)
+        self.assertEqual(response.data["error"]["code"], "CPF_DUPLICATE")
+        self.assertIn("cadastrado", response.data["error"]["message"].lower())
 
     def test_duplicate_cpf_different_tenants_allowed(self):
         self.client.force_authenticate(user=self.owner1)
