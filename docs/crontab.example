@@ -1,0 +1,6 @@
+# Expirar pré-agendamentos a cada minuto (TTL 10 min)
+# Edite o caminho do projeto e da venv conforme seu ambiente
+# */1 * * * * cd /path/to/petshop-saas-backend && .venv/bin/python manage.py expire_prebookings >> /var/log/expire_prebookings.log 2>&1
+
+# Windows Task Scheduler: agendar tarefa para executar a cada 1 minuto
+# python C:\path\to\petshop-saas-backend\manage.py expire_prebookings
