@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import jwt
 from django.conf import settings
 from django.db import models
@@ -5,7 +7,7 @@ from django.test import Client, TestCase
 from rest_framework.test import APIClient, APIRequestFactory
 
 from .context import clear_current_tenant, get_current_tenant, set_current_tenant
-from .models import Appointment, Customer, Pet, Service, Tenant, TenantAwareModel, User
+from .models import Appointment, Customer, Payment, Pet, Service, Tenant, TenantAwareModel, User
 from .permissions import IsOwner, IsOwnerOrAttendant
 
 
@@ -657,6 +659,11 @@ class AppointmentEndTimeTests(TestCase):
         self.assertIsNotNone(appt.end_time)
         expected_end = scheduled_at + timedelta(minutes=self.service.duration_minutes)
         self.assertEqual(appt.end_time, expected_end)
+        self.assertIsNotNone(appt.expires_at)
+        self.assertGreaterEqual(
+            (appt.expires_at - timezone.now()).total_seconds(), 9 * 60,
+            "expires_at should be ~10 min from now"
+        )
 
     def test_pre_book_endpoint_returns_end_time_without_payload(self):
         """POST /appointments/pre-book/ returns end_time without client sending it."""
@@ -678,6 +685,8 @@ class AppointmentEndTimeTests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertIn("appointment_id", response.data)
         self.assertIn("end_time", response.data)
+        self.assertIn("expires_at", response.data)
+        self.assertIsNotNone(response.data["expires_at"])
         self.assertEqual(response.data["status"], "PRE_BOOKED")
 
     def test_pre_book_same_slot_returns_409_conflict(self):
@@ -792,3 +801,124 @@ class ExceptionHandlerTests(TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.data["error"]["code"], "SCHEDULE_CONFLICT")
         self.assertIn("Conflito", response.data["error"]["message"])
+
+
+class ExpirePrebookingsCommandTests(TestCase):
+    """DoD: python manage.py expire_prebookings expira corretamente + log mostra contagem."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.tenant = Tenant.objects.create(subdomain="exp1", name="Tenant 1")
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="João",
+            cpf="39053344705",
+            email="joao@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Rex", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant, name="Banho", price=50, duration_minutes=60
+        )
+        self.now = timezone.now()
+        self.past = self.now - timedelta(minutes=15)
+
+    def test_expire_prebookings_marks_expired_and_shows_count(self):
+        """Command expires PRE_BOOKED appointments with expires_at < now and logs count."""
+        set_current_tenant(self.tenant)
+        apt1 = Appointment.all_objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.now + timedelta(hours=1),
+            status="PRE_BOOKED",
+            expires_at=self.past,
+        )
+        apt2 = Appointment.all_objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.now + timedelta(hours=2),
+            status="PRE_BOOKED",
+            expires_at=self.past,
+        )
+        self.assertEqual(Appointment.all_objects.filter(status="PRE_BOOKED").count(), 2)
+
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        call_command("expire_prebookings", stdout=out)
+        output = out.getvalue()
+
+        self.assertIn("2", output)
+        self.assertIn("Expired", output)
+        self.assertEqual(Appointment.all_objects.filter(status="PRE_BOOKED").count(), 0)
+        self.assertEqual(Appointment.all_objects.filter(status="EXPIRED").count(), 2)
+        apt1.refresh_from_db()
+        apt2.refresh_from_db()
+        self.assertEqual(apt1.status, "EXPIRED")
+        self.assertEqual(apt2.status, "EXPIRED")
+
+    def test_expire_prebookings_ignores_future_expires_at(self):
+        """Appointments with expires_at in future are not expired."""
+        set_current_tenant(self.tenant)
+        future_expires = self.now + timedelta(minutes=5)
+        Appointment.all_objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.now + timedelta(hours=1),
+            status="PRE_BOOKED",
+            expires_at=future_expires,
+        )
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        call_command("expire_prebookings", stdout=out)
+        output = out.getvalue()
+
+        self.assertIn("0", output)
+        self.assertEqual(Appointment.all_objects.filter(status="PRE_BOOKED").count(), 1)
+
+
+class PaymentModelTests(TestCase):
+    """DoD: Payment.objects.create funciona."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.tenant = Tenant.objects.create(subdomain="pay1", name="Tenant 1")
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="João",
+            cpf="39053344705",
+            email="joao@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Rex", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant, name="Banho", price=50, duration_minutes=60
+        )
+        set_current_tenant(self.tenant)
+        self.appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=timezone.now() + timedelta(hours=1),
+            status="PRE_BOOKED",
+        )
+
+    def test_payment_create(self):
+        """Payment.objects.create works with required fields."""
+        payment = Payment.objects.create(
+            appointment=self.appointment,
+            amount=25.50,
+        )
+        self.assertEqual(payment.status, "PENDING")
+        self.assertEqual(payment.amount, 25.50)
+        self.assertFalse(payment.webhook_processed)
+        self.assertIsNone(payment.payment_id_external)
+        self.assertEqual(Payment.all_objects.count(), 1)

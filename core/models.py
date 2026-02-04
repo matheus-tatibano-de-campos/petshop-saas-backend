@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.utils import timezone
 from django.contrib.postgres.constraints import ExclusionConstraint
 from django.contrib.postgres.fields import DateTimeRangeField, RangeBoundary, RangeOperators
 from django.db import models
@@ -172,6 +173,7 @@ class Appointment(TenantAwareModel):
     scheduled_at = models.DateTimeField()
     end_time = models.DateTimeField(editable=False)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PRE_BOOKED")
+    expires_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -195,4 +197,30 @@ class Appointment(TenantAwareModel):
         if self.scheduled_at and self.service_id:
             service = Service.objects.only("duration_minutes").get(pk=self.service_id)
             self.end_time = self.scheduled_at + timedelta(minutes=service.duration_minutes)
+        if self.status == "PRE_BOOKED" and self.expires_at is None:
+            self.expires_at = timezone.now() + timedelta(minutes=10)
         super().save(*args, **kwargs)
+
+
+class Payment(TenantAwareModel):
+    """Payment linked to appointment. Integrates with Mercado Pago."""
+
+    STATUS_CHOICES = [
+        ("PENDING", "Pendente"),
+        ("APPROVED", "Aprovado"),
+        ("REJECTED", "Rejeitado"),
+    ]
+
+    appointment = models.OneToOneField(
+        Appointment, on_delete=models.CASCADE, related_name="payment"
+    )
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PENDING")
+    payment_id_external = models.CharField(
+        max_length=100, unique=True, null=True, blank=True
+    )
+    webhook_processed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Payment {self.id} - {self.appointment} - {self.status}"

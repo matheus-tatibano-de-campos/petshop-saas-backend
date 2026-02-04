@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Appointment, Customer, Pet, Service, Tenant
+from .models import Appointment, Customer, Payment, Pet, Service, Tenant
 
 
 @admin.register(Tenant)
@@ -32,6 +32,13 @@ class ServiceAdmin(admin.ModelAdmin):
 
 @admin.register(Appointment)
 class AppointmentAdmin(admin.ModelAdmin):
-    list_display = ["pet", "service", "scheduled_at", "end_time", "status", "tenant"]
+    list_display = ["pet", "service", "scheduled_at", "end_time", "expires_at", "status", "tenant"]
     list_filter = ["status"]
     search_fields = ["pet__name"]
+
+
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = ["appointment", "amount", "status", "payment_id_external", "webhook_processed", "tenant"]
+    list_filter = ["status"]
+    search_fields = ["payment_id_external"]
