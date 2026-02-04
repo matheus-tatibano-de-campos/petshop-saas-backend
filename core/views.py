@@ -5,6 +5,7 @@ import logging
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
+from django.db import transaction
 from rest_framework import generics, permissions, viewsets
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -14,6 +15,7 @@ from rest_framework.response import Response
 from decimal import Decimal
 
 from django.conf import settings
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -217,10 +219,14 @@ class MercadoPagoWebhookView(APIView):
     permission_classes = []
 
     def post(self, request, *args, **kwargs):
+        webhook_received_at = timezone.now()
         try:
             # Extract notification data
             data = request.data
-            logger.info("Webhook received", extra={"data": data})
+            logger.info(
+                "Webhook received",
+                extra={"data": data, "timestamp": webhook_received_at.isoformat()}
+            )
 
             # Get notification type
             notification_type = data.get("type")
@@ -256,11 +262,15 @@ class MercadoPagoWebhookView(APIView):
                     status=404,
                 )
 
-            # Check if already processed
+            # Check if already processed (idempotency)
             if payment.webhook_processed:
                 logger.info(
-                    "Webhook already processed",
-                    extra={"payment_id": payment.id, "payment_id_external": payment_id_external},
+                    "Webhook already processed - idempotency check passed",
+                    extra={
+                        "payment_id": payment.id,
+                        "payment_id_external": payment_id_external,
+                        "timestamp": webhook_received_at.isoformat(),
+                    },
                 )
                 return Response({"status": "already_processed"}, status=200)
 
@@ -282,18 +292,31 @@ class MercadoPagoWebhookView(APIView):
                         "payment_id": payment.id,
                         "payment_id_external": payment_id_external,
                         "mp_status": mp_status,
+                        "timestamp": webhook_received_at.isoformat(),
                     },
                 )
 
-                # Update payment and appointment if approved
+                # Update payment and appointment if approved (with transaction for atomicity)
                 if mp_status == "approved":
-                    payment.status = "APPROVED"
-                    payment.webhook_processed = True
-                    payment.save()
+                    with transaction.atomic():
+                        # Re-fetch with select_for_update to lock the row
+                        payment = Payment.all_objects.select_for_update().get(pk=payment.id)
+                        
+                        # Double-check if already processed (race condition protection)
+                        if payment.webhook_processed:
+                            logger.info(
+                                "Payment already processed during transaction",
+                                extra={"payment_id": payment.id},
+                            )
+                            return Response({"status": "already_processed"}, status=200)
+                        
+                        payment.status = "APPROVED"
+                        payment.webhook_processed = True
+                        payment.save()
 
-                    appointment = payment.appointment
-                    appointment.status = "CONFIRMED"
-                    appointment.save()
+                        appointment = payment.appointment
+                        appointment.status = "CONFIRMED"
+                        appointment.save()
 
                     logger.info(
                         "Payment approved and appointment confirmed",
@@ -301,18 +324,36 @@ class MercadoPagoWebhookView(APIView):
                             "payment_id": payment.id,
                             "appointment_id": appointment.id,
                             "tenant_id": appointment.tenant_id,
+                            "timestamp": webhook_received_at.isoformat(),
                         },
                     )
 
                     return Response({"status": "processed", "payment_status": "approved"}, status=200)
+                    
                 elif mp_status == "rejected":
-                    payment.status = "REJECTED"
-                    payment.webhook_processed = True
-                    payment.save()
+                    with transaction.atomic():
+                        # Re-fetch with select_for_update to lock the row
+                        payment = Payment.all_objects.select_for_update().get(pk=payment.id)
+                        
+                        # Double-check if already processed
+                        if payment.webhook_processed:
+                            logger.info(
+                                "Payment already processed during transaction",
+                                extra={"payment_id": payment.id},
+                            )
+                            return Response({"status": "already_processed"}, status=200)
+                        
+                        payment.status = "REJECTED"
+                        payment.webhook_processed = True
+                        payment.save()
 
                     logger.info(
                         "Payment rejected",
-                        extra={"payment_id": payment.id, "mp_status": mp_status},
+                        extra={
+                            "payment_id": payment.id,
+                            "mp_status": mp_status,
+                            "timestamp": webhook_received_at.isoformat(),
+                        },
                     )
 
                     return Response({"status": "processed", "payment_status": "rejected"}, status=200)
