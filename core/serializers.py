@@ -6,7 +6,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import APIException
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Appointment, Customer, Pet, Service, Tenant
+from .models import Appointment, Customer, Payment, Pet, Service, Tenant
 
 
 class AppointmentConflict(APIException):
@@ -199,3 +199,24 @@ class PreBookAppointmentSerializer(serializers.Serializer):
             scheduled_at=scheduled_at,
             status="PRE_BOOKED",
         )
+
+
+class CheckoutSerializer(serializers.Serializer):
+    """Serializer for POST /payments/checkout/. Validates appointment_id and status=PRE_BOOKED."""
+
+    appointment_id = serializers.IntegerField()
+
+    def validate_appointment_id(self, value):
+        request = self.context.get("request")
+        if not request or not hasattr(request, "tenant"):
+            return value
+        tenant = request.tenant
+        try:
+            appointment = Appointment.all_objects.get(pk=value)
+        except Appointment.DoesNotExist:
+            raise serializers.ValidationError("Appointment não encontrado")
+        if appointment.tenant_id != tenant.id:
+            raise serializers.ValidationError("Appointment pertence a outro tenant")
+        if appointment.status != "PRE_BOOKED":
+            raise serializers.ValidationError("Appointment deve estar PRE_BOOKED")
+        return value

@@ -1,5 +1,8 @@
 from datetime import timedelta
 
+from decimal import Decimal
+from unittest.mock import MagicMock, patch
+
 import jwt
 from django.conf import settings
 from django.db import models
@@ -922,3 +925,96 @@ class PaymentModelTests(TestCase):
         self.assertFalse(payment.webhook_processed)
         self.assertIsNone(payment.payment_id_external)
         self.assertEqual(Payment.all_objects.count(), 1)
+
+
+class CheckoutAPITests(TestCase):
+    """DoD: checkout returns payment_link, creates Payment with 50% amount, validates PRE_BOOKED."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.client = APIClient()
+        self.tenant = Tenant.objects.create(subdomain="chk1", name="Tenant 1")
+        self.owner = User.objects.create_user(
+            email="owner@chk.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="João",
+            cpf="39053344705",
+            email="joao@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Rex", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant, name="Banho", price=100, duration_minutes=60
+        )
+        set_current_tenant(self.tenant)
+        self.appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=timezone.now() + timedelta(hours=2),
+            status="PRE_BOOKED",
+        )
+
+    @patch("mercadopago.SDK")
+    def test_checkout_creates_payment_and_returns_link(self, mock_sdk):
+        """Checkout creates Payment with 50% amount and returns payment_link from MP."""
+        mock_preference = MagicMock()
+        mock_preference.create.return_value = {
+            "response": {
+                "id": "mp-pref-123",
+                "init_point": "https://www.mercadopago.com.br/checkout/v1/redirect?pref_id=mp-pref-123",
+            }
+        }
+        mock_sdk.return_value.preference.return_value = mock_preference
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/payments/checkout/",
+            {"appointment_id": self.appointment.id},
+            format="json",
+            HTTP_HOST="chk1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertIn("payment_link", response.data)
+        self.assertIn("mp-pref-123", response.data["payment_link"])
+
+        payment = Payment.all_objects.get(appointment=self.appointment)
+        self.assertEqual(payment.amount, Decimal("50.00"))
+        self.assertEqual(payment.status, "PENDING")
+        self.assertEqual(payment.payment_id_external, "mp-pref-123")
+
+    def test_checkout_appointment_not_prebooked_returns_400(self):
+        """Checkout with appointment not PRE_BOOKED returns 400."""
+        self.appointment.status = "CONFIRMED"
+        self.appointment.save()
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            "/api/payments/checkout/",
+            {"appointment_id": self.appointment.id},
+            format="json",
+            HTTP_HOST="chk1.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("PRE_BOOKED", response.data["error"]["message"])
+
+    @patch("mercadopago.SDK")
+    def test_checkout_wrong_tenant_returns_400(self, mock_sdk):
+        """Checkout with appointment from another tenant returns 400."""
+        tenant2 = Tenant.objects.create(subdomain="chk2", name="Tenant 2")
+        owner2 = User.objects.create_user(
+            email="owner2@chk.com", password="pass123", role="OWNER", tenant=tenant2
+        )
+        self.client.force_authenticate(user=owner2)
+        response = self.client.post(
+            "/api/payments/checkout/",
+            {"appointment_id": self.appointment.id},
+            format="json",
+            HTTP_HOST="chk2.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("outro tenant", response.data["error"]["message"].lower())

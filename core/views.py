@@ -4,7 +4,12 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from rest_framework.response import Response
 
+from decimal import Decimal
+
+from django.conf import settings
+
 from .serializers import (
+    CheckoutSerializer,
     CustomTokenObtainPairSerializer,
     CustomerSerializer,
     PetSerializer,
@@ -12,7 +17,7 @@ from .serializers import (
     ServiceSerializer,
     TenantSerializer,
 )
-from .models import Customer, Pet, Service
+from .models import Appointment, Customer, Payment, Pet, Service
 from .permissions import IsOwnerOrAttendant
 
 
@@ -109,7 +114,67 @@ class PreBookAppointmentView(generics.CreateAPIView):
             {
                 "appointment_id": appointment.id,
                 "end_time": appointment.end_time.isoformat() if appointment.end_time else None,
+                "expires_at": appointment.expires_at.isoformat() if appointment.expires_at else None,
                 "status": appointment.status,
             },
             status=201,
         )
+
+
+class CheckoutView(generics.CreateAPIView):
+    """POST /payments/checkout - creates payment and returns Mercado Pago link."""
+
+    serializer_class = CheckoutSerializer
+    permission_classes = [IsOwnerOrAttendant]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        appointment_id = serializer.validated_data["appointment_id"]
+        appointment = Appointment.objects.get(pk=appointment_id)
+        
+        # Calculate 50% of service price
+        amount = Decimal(str(appointment.service.price)) * Decimal("0.5")
+        
+        # Create Payment record
+        payment = Payment.objects.create(
+            appointment=appointment,
+            amount=amount,
+            status="PENDING",
+        )
+        
+        # Create Mercado Pago preference
+        try:
+            import mercadopago
+            
+            sdk = mercadopago.SDK(settings.MERCADOPAGO_ACCESS_TOKEN)
+            preference_data = {
+                "items": [
+                    {
+                        "title": f"{appointment.service.name} - {appointment.pet.name}",
+                        "quantity": 1,
+                        "unit_price": float(amount),
+                    }
+                ]
+            }
+            preference_response = sdk.preference().create(preference_data)
+            preference = preference_response.get("response", {})
+            
+            if not preference or "id" not in preference:
+                raise Exception("Failed to create Mercado Pago preference")
+            
+            # Save external payment ID
+            payment.payment_id_external = preference["id"]
+            payment.save()
+            
+            return Response(
+                {"payment_link": preference.get("init_point")},
+                status=201,
+            )
+        except Exception as e:
+            payment.delete()
+            return Response(
+                {"error": {"code": "PAYMENT_ERROR", "message": str(e)}},
+                status=500,
+            )

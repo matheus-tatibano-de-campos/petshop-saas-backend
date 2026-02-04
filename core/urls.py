@@ -11,6 +11,7 @@ router.register("services", views.ServiceViewSet, basename="service")
 urlpatterns = [
     path("health/", views.health),
     path("appointments/pre-book/", views.PreBookAppointmentView.as_view(), name="pre_book_appointment"),
+    path("payments/checkout/", views.CheckoutView.as_view(), name="checkout"),
     path("tenant-info/", views.tenant_info),
     path("auth/login/", views.LoginView.as_view(), name="token_obtain_pair"),
     path("auth/refresh/", views.RefreshTokenView.as_view(), name="token_refresh"),
