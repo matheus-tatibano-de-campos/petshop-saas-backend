@@ -1018,3 +1018,162 @@ class CheckoutAPITests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("outro tenant", response.data["error"]["message"].lower())
+
+
+class MercadoPagoWebhookTests(TestCase):
+    """DoD: webhook processes payment notification, updates Payment and Appointment status."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.client = APIClient()
+        self.tenant = Tenant.objects.create(subdomain="webhook1", name="Tenant Webhook")
+        self.owner = User.objects.create_user(
+            email="owner@webhook.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="Cliente Webhook",
+            cpf="12345678901",
+            email="cliente@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Dog", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant, name="Banho", price=100, duration_minutes=60
+        )
+        set_current_tenant(self.tenant)
+        self.appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=timezone.now() + timedelta(hours=2),
+            status="PRE_BOOKED",
+        )
+        self.payment = Payment.objects.create(
+            appointment=self.appointment,
+            amount=Decimal("50.00"),
+            status="PENDING",
+            payment_id_external="mp-12345",
+        )
+
+    @patch("mercadopago.SDK")
+    def test_webhook_approved_payment_confirms_appointment(self, mock_sdk):
+        """Webhook with approved payment updates Payment to APPROVED and Appointment to CONFIRMED."""
+        mock_payment = MagicMock()
+        mock_payment.get.return_value = {
+            "response": {
+                "id": "mp-12345",
+                "status": "approved",
+            }
+        }
+        mock_sdk.return_value.payment.return_value = mock_payment
+
+        webhook_payload = {
+            "type": "payment",
+            "data": {"id": "mp-12345"},
+        }
+
+        response = self.client.post(
+            "/api/webhooks/mercadopago/",
+            webhook_payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "processed")
+        self.assertEqual(response.data["payment_status"], "approved")
+
+        # Refresh from database
+        self.payment.refresh_from_db()
+        self.appointment.refresh_from_db()
+
+        self.assertEqual(self.payment.status, "APPROVED")
+        self.assertTrue(self.payment.webhook_processed)
+        self.assertEqual(self.appointment.status, "CONFIRMED")
+
+    @patch("mercadopago.SDK")
+    def test_webhook_rejected_payment_updates_status(self, mock_sdk):
+        """Webhook with rejected payment updates Payment to REJECTED."""
+        mock_payment = MagicMock()
+        mock_payment.get.return_value = {
+            "response": {
+                "id": "mp-12345",
+                "status": "rejected",
+            }
+        }
+        mock_sdk.return_value.payment.return_value = mock_payment
+
+        webhook_payload = {
+            "type": "payment",
+            "data": {"id": "mp-12345"},
+        }
+
+        response = self.client.post(
+            "/api/webhooks/mercadopago/",
+            webhook_payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["payment_status"], "rejected")
+
+        self.payment.refresh_from_db()
+        self.assertEqual(self.payment.status, "REJECTED")
+        self.assertTrue(self.payment.webhook_processed)
+
+    @patch("mercadopago.SDK")
+    def test_webhook_already_processed_returns_200(self, mock_sdk):
+        """Webhook for already processed payment returns 200 without reprocessing."""
+        self.payment.webhook_processed = True
+        self.payment.save()
+
+        webhook_payload = {
+            "type": "payment",
+            "data": {"id": "mp-12345"},
+        }
+
+        response = self.client.post(
+            "/api/webhooks/mercadopago/",
+            webhook_payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "already_processed")
+
+        # Verify SDK was not called
+        mock_sdk.assert_not_called()
+
+    def test_webhook_payment_not_found_returns_404(self):
+        """Webhook with unknown payment_id returns 404."""
+        webhook_payload = {
+            "type": "payment",
+            "data": {"id": "unknown-payment-id"},
+        }
+
+        response = self.client.post(
+            "/api/webhooks/mercadopago/",
+            webhook_payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.data["error"]["code"], "PAYMENT_NOT_FOUND")
+
+    def test_webhook_ignores_non_payment_notifications(self):
+        """Webhook ignores non-payment notification types."""
+        webhook_payload = {
+            "type": "plan",
+            "data": {"id": "some-id"},
+        }
+
+        response = self.client.post(
+            "/api/webhooks/mercadopago/",
+            webhook_payload,
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "ignored")

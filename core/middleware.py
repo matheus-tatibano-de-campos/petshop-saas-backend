@@ -14,6 +14,10 @@ class TenantMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
+        # Skip tenant resolution for webhook endpoints (called externally)
+        if request.path.startswith("/api/webhooks/"):
+            return self.get_response(request)
+
         host = request.get_host().split(":")[0]
         if host in ("127.0.0.1", "localhost"):
             subdomain = "localhost"
