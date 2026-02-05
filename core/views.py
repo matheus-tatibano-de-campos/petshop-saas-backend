@@ -8,6 +8,8 @@ from django.utils.decorators import method_decorator
 from django.db import transaction
 from rest_framework import generics, permissions, viewsets
 from drf_spectacular.utils import extend_schema
+
+from .schema import ERROR_RESPONSES
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
@@ -67,6 +69,7 @@ class TenantCreateView(generics.CreateAPIView):
     permission_classes = [permissions.IsAdminUser]
 
 
+@extend_schema(responses={**ERROR_RESPONSES})
 class CustomerViewSet(viewsets.ModelViewSet):
     """CRUD for customers scoped by tenant."""
 
@@ -82,6 +85,7 @@ class CustomerViewSet(viewsets.ModelViewSet):
         return context
 
 
+@extend_schema(responses={**ERROR_RESPONSES})
 class PetViewSet(viewsets.ModelViewSet):
     """CRUD for pets. GET/POST /pets, GET/PUT/DELETE /pets/{id}. Pet must be linked to customer in same tenant."""
 
@@ -97,6 +101,7 @@ class PetViewSet(viewsets.ModelViewSet):
         return context
 
 
+@extend_schema(responses={**ERROR_RESPONSES})
 class ServiceViewSet(viewsets.ModelViewSet):
     """CRUD for services. Filter ?is_active=true|false. Validates price >= 0, duration_minutes > 0."""
 
@@ -116,6 +121,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
         return context
 
 
+@extend_schema(responses={**ERROR_RESPONSES})
 class AppointmentViewSet(viewsets.ModelViewSet):
     """CRUD for appointments. PATCH status uses AppointmentService.transition (422 if invalid)."""
 
@@ -127,7 +133,10 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         request=CancelAppointmentSerializer,
-        responses={200: {"description": "refund_amount"}},
+        responses={
+            200: {"description": "refund_amount"},
+            **ERROR_RESPONSES,
+        },
     )
     @action(detail=True, methods=["post"], url_path="cancel")
     def cancel(self, request, pk=None):
@@ -160,6 +169,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         return Response({"refund_amount": str(refund_amount)}, status=200)
 
 
+@extend_schema(responses={201: {"description": "appointment created"}, **ERROR_RESPONSES})
 class PreBookAppointmentView(generics.CreateAPIView):
     """POST /appointments/pre-book - creates appointment with status=PRE_BOOKED."""
 
@@ -181,6 +191,7 @@ class PreBookAppointmentView(generics.CreateAPIView):
         )
 
 
+@extend_schema(responses={201: {"description": "payment_link"}, **ERROR_RESPONSES})
 class CheckoutView(generics.CreateAPIView):
     """POST /payments/checkout - creates payment and returns Mercado Pago link."""
 

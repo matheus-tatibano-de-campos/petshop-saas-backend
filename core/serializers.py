@@ -3,19 +3,11 @@ from datetime import timedelta
 from django.db import models
 from pycpfcnpj import cpfcnpj
 from rest_framework import serializers
-from rest_framework.exceptions import APIException
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from .exceptions import AppointmentConflictError
 from .models import Appointment, Customer, Payment, Pet, Service, Tenant
 from .services import AppointmentService
-
-
-class AppointmentConflict(APIException):
-    """Raised when scheduling would create an overlapping appointment."""
-
-    status_code = 409
-    default_detail = "Horário já ocupado"
-    default_code = "APPOINTMENT_CONFLICT"
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -184,7 +176,7 @@ class PreBookAppointmentSerializer(serializers.Serializer):
             end_time__gt=scheduled_at,
         )
         if overlapping.exists():
-            raise AppointmentConflict()
+            raise AppointmentConflictError("Horário já ocupado")
         return attrs
 
     def create(self, validated_data):

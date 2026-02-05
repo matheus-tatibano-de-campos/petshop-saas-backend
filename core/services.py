@@ -8,21 +8,8 @@ from decimal import Decimal
 
 from django.utils import timezone
 
+from .exceptions import InvalidTransitionError
 from .models import Payment
-
-
-class InvalidTransitionError(Exception):
-    """Raised when an invalid status transition is attempted."""
-
-    def __init__(self, current_status, new_status, allowed_transitions):
-        self.current_status = current_status
-        self.new_status = new_status
-        self.allowed_transitions = allowed_transitions
-        message = (
-            f"Cannot transition from '{current_status}' to '{new_status}'. "
-            f"Allowed transitions: {allowed_transitions}"
-        )
-        super().__init__(message)
 
 
 class AppointmentService:

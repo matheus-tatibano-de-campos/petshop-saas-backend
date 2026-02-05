@@ -694,7 +694,7 @@ class AppointmentEndTimeTests(TestCase):
         self.assertEqual(response.data["status"], "PRE_BOOKED")
 
     def test_pre_book_same_slot_returns_409_conflict(self):
-        """Booking same pet+service+time twice returns 409 APPOINTMENT_CONFLICT."""
+        """Booking same pet+service+time twice returns 409 CONFLICT_SCHEDULE."""
         self.client = APIClient()
         self.owner = User.objects.create_user(
             email="owner2@apt.com", password="pass123", role="OWNER", tenant=self.tenant
@@ -719,8 +719,8 @@ class AppointmentEndTimeTests(TestCase):
             HTTP_HOST="apt1.localhost:8000",
         )
         self.assertEqual(r2.status_code, 409)
-        self.assertEqual(r2.data["error"]["code"], "APPOINTMENT_CONFLICT")
-        self.assertIn("ocupado", r2.data["error"]["message"].lower())
+        self.assertEqual(r2.data["error"]["code"], "CONFLICT_SCHEDULE")
+        self.assertIn("ocupado", (r2.data["error"]["message"] or "").lower())
 
     def test_cancelled_appointment_does_not_block_same_slot(self):
         """CANCELLED appointments do not block booking the same slot (DoD)."""
@@ -786,8 +786,8 @@ class AppointmentEndTimeTests(TestCase):
 class ExceptionHandlerTests(TestCase):
     """Tests for custom exception handler."""
 
-    def test_integrity_error_no_overlap_returns_409_schedule_conflict(self):
-        """IntegrityError from no_overlap constraint returns 409 SCHEDULE_CONFLICT."""
+    def test_integrity_error_no_overlap_returns_409_conflict_schedule(self):
+        """IntegrityError from no_overlap constraint returns 409 CONFLICT_SCHEDULE."""
         from django.db import IntegrityError
         from rest_framework.request import Request
         from rest_framework.views import APIView
@@ -803,8 +803,93 @@ class ExceptionHandlerTests(TestCase):
         response = custom_exception_handler(exc, context)
         self.assertIsNotNone(response)
         self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.data["error"]["code"], "SCHEDULE_CONFLICT")
+        self.assertEqual(response.data["error"]["code"], "CONFLICT_SCHEDULE")
         self.assertIn("Conflito", response.data["error"]["message"])
+
+
+class ErrorFormatIntegrationTests(TestCase):
+    """DoD: All endpoints return errors in format {'error': {'code': '...', 'message': '...'}}."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.tenant = Tenant.objects.create(subdomain="errfmt", name="Error Format")
+        self.owner = User.objects.create_user(
+            email="owner@errfmt.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="Cliente",
+            cpf="39053344705",
+            email="cliente@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Rex", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant, name="Banho", price=50, duration_minutes=60
+        )
+
+    def _assert_error_format(self, data):
+        """Assert response has standard error format."""
+        self.assertIn("error", data)
+        self.assertIn("code", data["error"])
+        self.assertIn("message", data["error"])
+
+    def test_customers_invalid_cpf_returns_standard_format(self):
+        """POST /customers/ with invalid CPF returns {error: {code, message}}."""
+        self.client.force_authenticate(user=self.owner)
+        r = self.client.post(
+            "/api/customers/",
+            {"name": "X", "cpf": "000", "email": "x@x.com", "phone": "11999999999"},
+            format="json",
+            HTTP_HOST="errfmt.localhost:8000",
+        )
+        self.assertEqual(r.status_code, 400)
+        self._assert_error_format(r.data)
+        self.assertEqual(r.data["error"]["code"], "INVALID_CPF")
+
+    def test_services_validation_returns_standard_format(self):
+        """POST /services/ with invalid data returns {error: {code, message}}."""
+        self.client.force_authenticate(user=self.owner)
+        r = self.client.post(
+            "/api/services/",
+            {"name": "X", "price": -1, "duration_minutes": 60},
+            format="json",
+            HTTP_HOST="errfmt.localhost:8000",
+        )
+        self.assertEqual(r.status_code, 400)
+        self._assert_error_format(r.data)
+        self.assertIn(r.data["error"]["code"], ("INVALID_PRICE", "VALIDATION_ERROR"))
+
+    def test_appointments_invalid_transition_returns_standard_format(self):
+        """PATCH appointment invalid status returns 422 {error: {code, message}}."""
+        from django.utils import timezone
+
+        set_current_tenant(self.tenant)
+        apt = Appointment.all_objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=timezone.now() + timedelta(hours=1),
+            status="PRE_BOOKED",
+        )
+        self.client.force_authenticate(user=self.owner)
+        r = self.client.patch(
+            f"/api/appointments/{apt.id}/",
+            {"status": "COMPLETED"},
+            format="json",
+            HTTP_HOST="errfmt.localhost:8000",
+        )
+        self.assertEqual(r.status_code, 422)
+        self._assert_error_format(r.data)
+        self.assertEqual(r.data["error"]["code"], "INVALID_TRANSITION")
+
+    def test_tenant_not_found_returns_standard_format(self):
+        """Unknown subdomain returns 404 {error: {code, message}}."""
+        r = self.client.get("/api/health/", HTTP_HOST="nonexistent.localhost:8000")
+        self.assertEqual(r.status_code, 404)
+        self._assert_error_format(r.json())
+        self.assertEqual(r.json()["error"]["code"], "TENANT_NOT_FOUND")
 
 
 class ExpirePrebookingsCommandTests(TestCase):
