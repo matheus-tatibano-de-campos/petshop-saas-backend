@@ -12,6 +12,7 @@ from rest_framework.test import APIClient, APIRequestFactory
 from .context import clear_current_tenant, get_current_tenant, set_current_tenant
 from .models import Appointment, Customer, Payment, Pet, Service, Tenant, TenantAwareModel, User
 from .permissions import IsOwner, IsOwnerOrAttendant
+from .services import AppointmentService, InvalidTransitionError
 
 
 class TenantMiddlewareIntegrationTests(TestCase):
@@ -1262,4 +1263,231 @@ class WebhookIdempotencyTests(TestCase):
         
         # Verify MP API was only called once (first call)
         self.assertEqual(mock_payment.get.call_count, 1)
+
+
+class AppointmentTransitionTests(TestCase):
+    """DoD: All valid transitions pass, invalid ones raise InvalidTransitionError."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.tenant = Tenant.objects.create(subdomain="transitions", name="Transitions Test")
+        self.owner = User.objects.create_user(
+            email="owner@transitions.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="Cliente",
+            cpf="12345678901",
+            email="cliente@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Dog", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant, name="Banho", price=100, duration_minutes=60
+        )
+        set_current_tenant(self.tenant)
+        self.base_scheduled_at = timezone.now() + timedelta(hours=2)
+
+    def test_prebooked_to_confirmed_valid(self):
+        """PRE_BOOKED → CONFIRMED is a valid transition."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="PRE_BOOKED",
+        )
+        
+        result = AppointmentService.transition(appointment, "CONFIRMED")
+        
+        self.assertEqual(result.status, "CONFIRMED")
+        appointment.refresh_from_db()
+        self.assertEqual(appointment.status, "CONFIRMED")
+
+    def test_prebooked_to_expired_valid(self):
+        """PRE_BOOKED → EXPIRED is a valid transition."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="PRE_BOOKED",
+        )
+        
+        result = AppointmentService.transition(appointment, "EXPIRED")
+        
+        self.assertEqual(result.status, "EXPIRED")
+
+    def test_prebooked_to_cancelled_valid(self):
+        """PRE_BOOKED → CANCELLED is a valid transition."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="PRE_BOOKED",
+        )
+        
+        result = AppointmentService.transition(appointment, "CANCELLED")
+        
+        self.assertEqual(result.status, "CANCELLED")
+
+    def test_confirmed_to_completed_valid(self):
+        """CONFIRMED → COMPLETED is a valid transition."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="CONFIRMED",
+        )
+        
+        result = AppointmentService.transition(appointment, "COMPLETED")
+        
+        self.assertEqual(result.status, "COMPLETED")
+
+    def test_confirmed_to_no_show_valid(self):
+        """CONFIRMED → NO_SHOW is a valid transition."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="CONFIRMED",
+        )
+        
+        result = AppointmentService.transition(appointment, "NO_SHOW")
+        
+        self.assertEqual(result.status, "NO_SHOW")
+
+    def test_confirmed_to_cancelled_valid(self):
+        """CONFIRMED → CANCELLED is a valid transition."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="CONFIRMED",
+        )
+        
+        result = AppointmentService.transition(appointment, "CANCELLED")
+        
+        self.assertEqual(result.status, "CANCELLED")
+
+    def test_prebooked_to_completed_invalid(self):
+        """PRE_BOOKED → COMPLETED is INVALID."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="PRE_BOOKED",
+        )
+        
+        with self.assertRaises(InvalidTransitionError) as context:
+            AppointmentService.transition(appointment, "COMPLETED")
+        
+        self.assertIn("PRE_BOOKED", str(context.exception))
+        self.assertIn("COMPLETED", str(context.exception))
+        
+        # Status should not have changed
+        appointment.refresh_from_db()
+        self.assertEqual(appointment.status, "PRE_BOOKED")
+
+    def test_confirmed_to_expired_invalid(self):
+        """CONFIRMED → EXPIRED is INVALID."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="CONFIRMED",
+        )
+        
+        with self.assertRaises(InvalidTransitionError):
+            AppointmentService.transition(appointment, "EXPIRED")
+        
+        appointment.refresh_from_db()
+        self.assertEqual(appointment.status, "CONFIRMED")
+
+    def test_completed_to_anything_invalid(self):
+        """COMPLETED is a terminal state - no transitions allowed."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="COMPLETED",
+        )
+        
+        # Try all possible transitions from COMPLETED
+        for target_status in ["PRE_BOOKED", "CONFIRMED", "CANCELLED", "EXPIRED", "NO_SHOW"]:
+            with self.assertRaises(InvalidTransitionError):
+                AppointmentService.transition(appointment, target_status)
+
+    def test_cancelled_to_anything_invalid(self):
+        """CANCELLED is a terminal state - no transitions allowed."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="CANCELLED",
+        )
+        
+        with self.assertRaises(InvalidTransitionError):
+            AppointmentService.transition(appointment, "CONFIRMED")
+
+    def test_expired_to_anything_invalid(self):
+        """EXPIRED is a terminal state - no transitions allowed."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="EXPIRED",
+        )
+        
+        with self.assertRaises(InvalidTransitionError):
+            AppointmentService.transition(appointment, "CONFIRMED")
+
+    def test_no_show_to_anything_invalid(self):
+        """NO_SHOW is a terminal state - no transitions allowed."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="NO_SHOW",
+        )
+        
+        with self.assertRaises(InvalidTransitionError):
+            AppointmentService.transition(appointment, "COMPLETED")
+
+    def test_get_allowed_transitions(self):
+        """get_allowed_transitions returns correct transitions."""
+        self.assertEqual(
+            set(AppointmentService.get_allowed_transitions("PRE_BOOKED")),
+            {"CONFIRMED", "EXPIRED", "CANCELLED"},
+        )
+        self.assertEqual(
+            set(AppointmentService.get_allowed_transitions("CONFIRMED")),
+            {"COMPLETED", "NO_SHOW", "CANCELLED"},
+        )
+        self.assertEqual(AppointmentService.get_allowed_transitions("COMPLETED"), [])
+        self.assertEqual(AppointmentService.get_allowed_transitions("CANCELLED"), [])
+
+    def test_can_transition(self):
+        """can_transition returns True for valid, False for invalid."""
+        self.assertTrue(AppointmentService.can_transition("PRE_BOOKED", "CONFIRMED"))
+        self.assertTrue(AppointmentService.can_transition("CONFIRMED", "COMPLETED"))
+        self.assertFalse(AppointmentService.can_transition("PRE_BOOKED", "COMPLETED"))
+        self.assertFalse(AppointmentService.can_transition("COMPLETED", "CONFIRMED"))
+
+    def test_invalid_transition_error_attributes(self):
+        """InvalidTransitionError has correct attributes."""
+        appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=self.base_scheduled_at,
+            status="PRE_BOOKED",
+        )
+        
+        try:
+            AppointmentService.transition(appointment, "COMPLETED")
+        except InvalidTransitionError as e:
+            self.assertEqual(e.current_status, "PRE_BOOKED")
+            self.assertEqual(e.new_status, "COMPLETED")
+            self.assertEqual(e.allowed_transitions, ["CONFIRMED", "EXPIRED", "CANCELLED"])
 
