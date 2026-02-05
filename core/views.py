@@ -20,6 +20,7 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 from .serializers import (
+    AppointmentSerializer,
     CheckoutSerializer,
     CustomTokenObtainPairSerializer,
     CustomerSerializer,
@@ -109,6 +110,16 @@ class ServiceViewSet(viewsets.ModelViewSet):
         context = super().get_serializer_context()
         context["request"] = self.request
         return context
+
+
+class AppointmentViewSet(viewsets.ModelViewSet):
+    """CRUD for appointments. PATCH status uses AppointmentService.transition (422 if invalid)."""
+
+    serializer_class = AppointmentSerializer
+    permission_classes = [IsOwnerOrAttendant]
+
+    def get_queryset(self):
+        return Appointment.objects.all()
 
 
 class PreBookAppointmentView(generics.CreateAPIView):

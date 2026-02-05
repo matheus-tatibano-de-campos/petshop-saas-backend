@@ -7,6 +7,7 @@ from rest_framework.exceptions import APIException
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 from .models import Appointment, Customer, Payment, Pet, Service, Tenant
+from .services import AppointmentService
 
 
 class AppointmentConflict(APIException):
@@ -220,3 +221,22 @@ class CheckoutSerializer(serializers.Serializer):
         if appointment.status != "PRE_BOOKED":
             raise serializers.ValidationError("Appointment deve estar PRE_BOOKED")
         return value
+
+
+class AppointmentSerializer(serializers.ModelSerializer):
+    """Serializer for Appointment. Status updates use AppointmentService.transition()."""
+
+    class Meta:
+        model = Appointment
+        fields = ["id", "pet", "service", "scheduled_at", "end_time", "status", "expires_at", "created_at", "updated_at"]
+        read_only_fields = ["id", "end_time", "created_at", "updated_at"]
+
+    def update(self, instance, validated_data):
+        new_status = validated_data.pop("status", None)
+        if new_status is not None and new_status != instance.status:
+            AppointmentService.transition(instance, new_status)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        if validated_data:
+            instance.save()
+        return instance

@@ -1489,5 +1489,71 @@ class AppointmentTransitionTests(TestCase):
         except InvalidTransitionError as e:
             self.assertEqual(e.current_status, "PRE_BOOKED")
             self.assertEqual(e.new_status, "COMPLETED")
-            self.assertEqual(e.allowed_transitions, ["CONFIRMED", "EXPIRED", "CANCELLED"])
+            self.assertEqual(
+                set(e.allowed_transitions),
+                {"CONFIRMED", "EXPIRED", "CANCELLED"},
+            )
+
+
+class AppointmentTransitionAPITests(TestCase):
+    """DoD: PRE_BOOKED->COMPLETED = 422 with standardized error."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.client = APIClient()
+        self.tenant = Tenant.objects.create(subdomain="transapi", name="Trans API")
+        self.owner = User.objects.create_user(
+            email="owner@transapi.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="Cliente",
+            cpf="12345678901",
+            email="cliente@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Dog", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant, name="Banho", price=100, duration_minutes=60
+        )
+        set_current_tenant(self.tenant)
+        self.appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=timezone.now() + timedelta(hours=2),
+            status="PRE_BOOKED",
+        )
+
+    def test_prebooked_to_completed_returns_422(self):
+        """PATCH appointment PRE_BOOKED->COMPLETED returns 422 with INVALID_TRANSITION."""
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.patch(
+            f"/api/appointments/{self.appointment.id}/",
+            {"status": "COMPLETED"},
+            format="json",
+            HTTP_HOST="transapi.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.data["error"]["code"], "INVALID_TRANSITION")
+        self.assertIn("PRE_BOOKED", response.data["error"]["message"])
+        self.assertIn("COMPLETED", response.data["error"]["message"])
+
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, "PRE_BOOKED")
+
+    def test_prebooked_to_confirmed_returns_200(self):
+        """PATCH appointment PRE_BOOKED->CONFIRMED returns 200."""
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.patch(
+            f"/api/appointments/{self.appointment.id}/",
+            {"status": "CONFIRMED"},
+            format="json",
+            HTTP_HOST="transapi.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, "CONFIRMED")
 

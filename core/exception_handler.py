@@ -3,7 +3,10 @@ Custom exception handler that returns all errors in the standard format:
 {"error": {"code": "...", "message": "..."}}
 """
 from django.db import IntegrityError
+from rest_framework.response import Response
 from rest_framework.views import exception_handler
+
+from .services import InvalidTransitionError
 
 
 def _normalize_message(detail):
@@ -43,6 +46,12 @@ def _infer_code(message):
 
 def custom_exception_handler(exc, context):
     """Convert all API errors to standard format."""
+    if isinstance(exc, InvalidTransitionError):
+        return Response(
+            {"error": {"code": "INVALID_TRANSITION", "message": str(exc)}},
+            status=422,
+        )
+
     response = exception_handler(exc, context)
 
     if isinstance(exc, IntegrityError):
@@ -60,8 +69,6 @@ def custom_exception_handler(exc, context):
 
 def _integrity_error_response(exc, context):
     """Handle IntegrityError: no_overlap -> SCHEDULE_CONFLICT 409, else CPF_DUPLICATE 400."""
-    from rest_framework.response import Response
-
     err_str = str(exc).lower()
     if "no_overlap" in err_str or "exclusion" in err_str:
         return Response(
