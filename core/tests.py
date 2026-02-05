@@ -10,9 +10,9 @@ from django.test import Client, TestCase
 from rest_framework.test import APIClient, APIRequestFactory
 
 from .context import clear_current_tenant, get_current_tenant, set_current_tenant
-from .models import Appointment, Customer, Payment, Pet, Service, Tenant, TenantAwareModel, User
+from .models import Appointment, Customer, Payment, Pet, Refund, Service, Tenant, TenantAwareModel, User
 from .permissions import IsOwner, IsOwnerOrAttendant
-from .services import AppointmentService, InvalidTransitionError
+from .services import AppointmentService, CancellationService, InvalidTransitionError
 
 
 class TenantMiddlewareIntegrationTests(TestCase):
@@ -1556,4 +1556,164 @@ class AppointmentTransitionAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.appointment.refresh_from_db()
         self.assertEqual(self.appointment.status, "CONFIRMED")
+
+
+class CancellationServiceTests(TestCase):
+    """Tests for CancellationService.calculate_refund: >24h=90%, 24h-2h=80%, <2h=0%."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(subdomain="cancel", name="Cancel Test")
+        self.owner = User.objects.create_user(
+            email="owner@cancel.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="Cliente",
+            cpf="12345678901",
+            email="cliente@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Dog", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant, name="Banho", price=100, duration_minutes=60
+        )
+        set_current_tenant(self.tenant)
+
+    def test_refund_over_24h_returns_90_percent(self):
+        """Cancel >24h before: refund = 90% of paid amount."""
+        from django.utils import timezone
+
+        scheduled = timezone.now() + timedelta(hours=30)
+        appointment = Appointment.objects.create(
+            pet=self.pet, service=self.service, scheduled_at=scheduled, status="CONFIRMED"
+        )
+        Payment.objects.create(appointment=appointment, amount=Decimal("50.00"), status="APPROVED")
+
+        refund = CancellationService.calculate_refund(appointment)
+        self.assertEqual(refund, Decimal("45.00"))  # 90% of 50
+
+    def test_refund_24h_to_2h_returns_80_percent(self):
+        """Cancel 24h-2h before (23h): refund = 80% of paid amount. DoD: 23h=80%."""
+        from django.utils import timezone
+
+        scheduled = timezone.now() + timedelta(hours=23)
+        appointment = Appointment.objects.create(
+            pet=self.pet, service=self.service, scheduled_at=scheduled, status="CONFIRMED"
+        )
+        Payment.objects.create(appointment=appointment, amount=Decimal("50.00"), status="APPROVED")
+
+        refund = CancellationService.calculate_refund(appointment)
+        self.assertEqual(refund, Decimal("40.00"))  # 80% of 50
+
+    def test_refund_exactly_2h_returns_80_percent(self):
+        """Cancel 2h+ before (boundary): refund = 80% (hours_until >= 2)."""
+        from django.utils import timezone
+
+        scheduled = timezone.now() + timedelta(hours=2, minutes=1)
+        appointment = Appointment.objects.create(
+            pet=self.pet, service=self.service, scheduled_at=scheduled, status="CONFIRMED"
+        )
+        Payment.objects.create(appointment=appointment, amount=Decimal("50.00"), status="APPROVED")
+
+        refund = CancellationService.calculate_refund(appointment)
+        self.assertEqual(refund, Decimal("40.00"))  # 80% of 50
+
+    def test_refund_under_2h_returns_0(self):
+        """Cancel <2h before (1h): refund = 0. DoD: 1h=0%."""
+        from django.utils import timezone
+
+        scheduled = timezone.now() + timedelta(hours=1)
+        appointment = Appointment.objects.create(
+            pet=self.pet, service=self.service, scheduled_at=scheduled, status="CONFIRMED"
+        )
+        Payment.objects.create(appointment=appointment, amount=Decimal("50.00"), status="APPROVED")
+
+        refund = CancellationService.calculate_refund(appointment)
+        self.assertEqual(refund, Decimal("0.00"))
+
+    def test_refund_no_payment_returns_0(self):
+        """Cancel without payment: refund = 0."""
+        from django.utils import timezone
+
+        scheduled = timezone.now() + timedelta(hours=30)
+        appointment = Appointment.objects.create(
+            pet=self.pet, service=self.service, scheduled_at=scheduled, status="CONFIRMED"
+        )
+
+        refund = CancellationService.calculate_refund(appointment)
+        self.assertEqual(refund, Decimal("0.00"))
+
+
+class AppointmentCancelAPITests(TestCase):
+    """DoD: Endpoint returns refund_amount, validates CONFIRMED."""
+
+    def setUp(self):
+        from django.utils import timezone
+
+        self.client = APIClient()
+        self.tenant = Tenant.objects.create(subdomain="cancelapi", name="Cancel API")
+        self.owner = User.objects.create_user(
+            email="owner@cancelapi.com", password="pass123", role="OWNER", tenant=self.tenant
+        )
+        self.customer = Customer.all_objects.create(
+            tenant=self.tenant,
+            name="Cliente",
+            cpf="12345678901",
+            email="cliente@example.com",
+            phone="11999999999",
+        )
+        self.pet = Pet.all_objects.create(
+            tenant=self.tenant, name="Dog", species="DOG", breed="Labrador", customer=self.customer
+        )
+        self.service = Service.all_objects.create(
+            tenant=self.tenant, name="Banho", price=100, duration_minutes=60
+        )
+        set_current_tenant(self.tenant)
+        scheduled = timezone.now() + timedelta(hours=30)
+        self.appointment = Appointment.objects.create(
+            pet=self.pet,
+            service=self.service,
+            scheduled_at=scheduled,
+            status="CONFIRMED",
+        )
+        Payment.objects.create(
+            appointment=self.appointment, amount=Decimal("50.00"), status="APPROVED"
+        )
+
+    def test_cancel_returns_refund_amount(self):
+        """POST /appointments/{id}/cancel returns refund_amount and creates Refund."""
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            f"/api/appointments/{self.appointment.id}/cancel/",
+            {"reason": "Cliente desistiu"},
+            format="json",
+            HTTP_HOST="cancelapi.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("refund_amount", response.data)
+        self.assertEqual(response.data["refund_amount"], "45.00")  # 90% of 50
+
+        self.appointment.refresh_from_db()
+        self.assertEqual(self.appointment.status, "CANCELLED")
+
+        refund = Refund.all_objects.get(appointment=self.appointment)
+        self.assertEqual(refund.amount, Decimal("45.00"))
+        self.assertEqual(refund.reason, "Cliente desistiu")
+
+    def test_cancel_prebooked_returns_400(self):
+        """Cancel PRE_BOOKED appointment returns 400."""
+        self.appointment.status = "PRE_BOOKED"
+        self.appointment.save()
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            f"/api/appointments/{self.appointment.id}/cancel/",
+            {},
+            format="json",
+            HTTP_HOST="cancelapi.localhost:8000",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["error"]["code"], "INVALID_STATUS")
 

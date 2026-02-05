@@ -7,6 +7,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from django.db import transaction
 from rest_framework import generics, permissions, viewsets
+from drf_spectacular.utils import extend_schema
+from rest_framework.decorators import action
 from rest_framework.views import APIView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
@@ -21,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 from .serializers import (
     AppointmentSerializer,
+    CancelAppointmentSerializer,
     CheckoutSerializer,
     CustomTokenObtainPairSerializer,
     CustomerSerializer,
@@ -29,8 +32,9 @@ from .serializers import (
     ServiceSerializer,
     TenantSerializer,
 )
-from .models import Appointment, Customer, Payment, Pet, Service
+from .models import Appointment, Customer, Payment, Pet, Refund, Service
 from .permissions import IsOwnerOrAttendant
+from .services import AppointmentService, CancellationService
 
 
 def health(request):
@@ -120,6 +124,40 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return Appointment.objects.all()
+
+    @extend_schema(
+        request=CancelAppointmentSerializer,
+        responses={200: {"description": "refund_amount"}},
+    )
+    @action(detail=True, methods=["post"], url_path="cancel")
+    def cancel(self, request, pk=None):
+        """
+        POST /appointments/{id}/cancel - Cancel CONFIRMED appointment and calculate refund.
+        Body (optional): {reason: string}
+        Returns: {refund_amount}
+        """
+        appointment = self.get_object()
+
+        if (appointment.status or "").strip() != "CONFIRMED":
+            return Response(
+                {"error": {"code": "INVALID_STATUS", "message": "Apenas appointments CONFIRMED podem ser cancelados"}},
+                status=400,
+            )
+
+        reason = request.data.get("reason", "") or ""
+        refund_amount = CancellationService.calculate_refund(appointment)
+
+        AppointmentService.transition(appointment, "CANCELLED")
+
+        Refund.objects.create(
+            appointment=appointment,
+            amount=refund_amount,
+            status="PENDING",
+            reason=reason[:255],
+            tenant=appointment.tenant,
+        )
+
+        return Response({"refund_amount": str(refund_amount)}, status=200)
 
 
 class PreBookAppointmentView(generics.CreateAPIView):

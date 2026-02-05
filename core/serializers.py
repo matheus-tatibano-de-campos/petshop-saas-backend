@@ -223,6 +223,12 @@ class CheckoutSerializer(serializers.Serializer):
         return value
 
 
+class CancelAppointmentSerializer(serializers.Serializer):
+    """Request body for POST /appointments/{id}/cancel/. Optional reason."""
+
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=255)
+
+
 class AppointmentSerializer(serializers.ModelSerializer):
     """Serializer for Appointment. Status updates use AppointmentService.transition()."""
 

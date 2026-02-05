@@ -4,6 +4,11 @@ Service Layer for business logic.
 This module contains service classes that encapsulate business logic
 and orchestrate operations across models.
 """
+from decimal import Decimal
+
+from django.utils import timezone
+
+from .models import Payment
 
 
 class InvalidTransitionError(Exception):
@@ -86,3 +91,54 @@ class AppointmentService:
             bool: True if transition is allowed, False otherwise
         """
         return new_status in cls.ALLOWED_TRANSITIONS.get(current_status, [])
+
+
+class CancellationService:
+    """Service for appointment cancellation and refund calculation."""
+
+    # Refund policy: >24h=90%, 24h-2h=80%, <2h=0%
+    REFUND_PERCENT_OVER_24H = Decimal("0.90")
+    REFUND_PERCENT_24H_TO_2H = Decimal("0.80")
+    REFUND_PERCENT_UNDER_2H = Decimal("0")
+
+    @classmethod
+    def calculate_refund(cls, appointment):
+        """
+        Calculate refund amount based on cancellation timing.
+
+        >24h before scheduled_at: 90% of paid amount
+        24h-2h before: 80% of paid amount
+        <2h before: 0%
+
+        Args:
+            appointment: Appointment instance (must be CONFIRMED with Payment)
+
+        Returns:
+            Decimal: Refund amount (0 if no payment or <2h before)
+        """
+        try:
+            payment = appointment.payment
+        except Payment.DoesNotExist:
+            return Decimal("0")
+
+        if payment.status != "APPROVED":
+            return Decimal("0")
+
+        paid_amount = Decimal(str(payment.amount))
+        now = timezone.now()
+        scheduled_at = appointment.scheduled_at
+
+        if scheduled_at.tzinfo is None:
+            scheduled_at = timezone.make_aware(scheduled_at)
+
+        hours_until = (scheduled_at - now).total_seconds() / 3600
+
+        if hours_until > 24:
+            refund_percent = cls.REFUND_PERCENT_OVER_24H
+        elif hours_until >= 2:
+            refund_percent = cls.REFUND_PERCENT_24H_TO_2H
+        else:
+            refund_percent = cls.REFUND_PERCENT_UNDER_2H
+
+        refund_amount = (paid_amount * refund_percent).quantize(Decimal("0.01"))
+        return refund_amount
